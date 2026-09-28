@@ -22,7 +22,9 @@ The bot needs View Channels, Send Messages, Embed Links, Read Message History, C
 1. Run `/status` and `/sources`; confirm the expected bank and service configuration.
 2. Run `/game start count:5`. In the private setup panel, select multiple categories, try the pool/format/source dropdowns, and set answer time to 7 seconds using the number form. Press Start game. Confirm the complete question and MC options display.
 3. Both players press Buzz together. Only one should claim the question; the other gets a private rejection.
+   After a successful buzz, confirm the public question and all MC options disappear for everyone after two seconds. The winner's private Answer button and `/answer` must still work. If an answer is judged before two seconds, the question should remain visible without a later deletion.
 4. Submit a wrong answer. That player cannot buzz again on this question; the other player can. The official answer and judging explanation must stay hidden. Let another claimed answer time out; it should use the configured 7 seconds, count as a miss, and reopen buzzing for eligible players. Submit a correct answer on a later question and confirm answer reveal and automatic progression. An unclaimed buzz window also eventually reveals and advances.
+   Confirm the full question is reposted after each judged answer or answer timeout. A wrong answer/timeout must start a fresh configured buzz window after restoration. For a correct answer, the question returns alongside its result, then the game advances normally. Try a long question to check that every text chunk is deleted and restored.
 5. Press an older question's button. It must not claim or answer the current question.
 6. Check `/score`, then `/game stop`. Even a stopped game must save results and attempt a final leaderboard.
 7. Run a second game to natural completion and check tied ranks and per-player accuracy. Ungraded attempts must not lower accuracy.

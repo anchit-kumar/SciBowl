@@ -79,13 +79,16 @@ class QuestionView(discord.ui.View):
                     self.session.id,
                     "Another player claimed this question, you already missed it, or its timer expired.",
                 )
+            self.app.schedule_question_hide(self.session)
             await self.app.persist(self.session)
             await self.app.update_controls(self.session)
             self.app.schedule_deadline(self.session)
             await self.app.private_reply(
                 interaction,
                 self.session.id,
-                "You buzzed first. Press Answer or use /answer before time runs out.",
+                "You buzzed first. The question disappears for everyone in 2 seconds. "
+                "Press Answer or use /answer before time runs out.",
+                view=self.app.answer_view(self.session),
             )
             await self.app.send_session_message(
                 self.session.id,
@@ -151,6 +154,11 @@ class BowlBot(discord.Client):
         self.timers = {}
         self.messages = {}
         self.question_views = {}
+        self.question_messages = {}
+        self.hide_tasks = {}
+        self.hiding_started = set()
+        self.hidden_questions = set()
+        self.answer_views = {}
         self.channels = {}
         self.last_activity = {}
         self.background = set()
@@ -214,10 +222,104 @@ class BowlBot(discord.Client):
     def touch(self, session):
         self.last_activity[session.id] = time.monotonic()
 
-    async def private_reply(self, interaction, session_id, content):
-        message = await interaction.followup.send(content, ephemeral=True, wait=True)
+    async def private_reply(self, interaction, session_id, content, **kwargs):
+        message = await interaction.followup.send(content, ephemeral=True, wait=True, **kwargs)
         self.private_messages.remember(session_id, interaction.user.id, message)
         return message
+
+    def answer_view(self, session):
+        previous = self.answer_views.pop(session.id, None)
+        if previous:
+            previous.stop()
+        view = QuestionView(self, session)
+        self.answer_views[session.id] = view
+        return view
+
+    def schedule_question_hide(self, session):
+        round_id, owner = session.round_id, session.winner_id
+
+        async def hide():
+            await asyncio.sleep(2)
+            if (
+                self.sessions.get(session.channel_id) is not session
+                or session.round_id != round_id
+                or session.winner_id != owner
+                or session.state not in ("answering", "judging")
+            ):
+                return True
+            self.hiding_started.add(session.id)
+            self.hidden_questions.add(session.id)
+            failed = False
+            for message in self.question_messages.get(session.id, []):
+                try:
+                    await message.delete()
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    failed = True
+            if failed:
+                # Do not wait on the operation lock here: a judgment may hold it
+                # and then wait for this deletion task before restoring the question.
+                async def pause_failed_claim():
+                    async with self.operation_lock(session):
+                        if (
+                            self.sessions.get(session.channel_id) is session
+                            and session.round_id == round_id
+                            and session.winner_id == owner
+                            and session.state in ("answering", "judging")
+                        ):
+                            self.cancel_timer(session)
+                            await session.pause()
+                            await self.persist(session)
+                            await self.update_controls(session)
+                            await self.send_session_message(
+                                session.id,
+                                self.channel(session),
+                                content="I could not hide the question. The game is paused; "
+                                "restore message access and use /game resume.",
+                            )
+
+                self.spawn(pause_failed_claim())
+                return False
+            self.messages.pop(session.id, None)
+            self.stop_question_view(session)
+            return True
+
+        self.hide_tasks[session.id] = self.spawn(hide())
+
+    async def finish_question_hide(self, session):
+        task = self.hide_tasks.pop(session.id, None)
+        success = True
+        if task:
+            if session.id not in self.hiding_started and not task.done():
+                task.cancel()
+            result = (await asyncio.gather(task, return_exceptions=True))[0]
+            success = result is not False and (
+                not isinstance(result, BaseException) or isinstance(result, asyncio.CancelledError)
+            )
+        self.hiding_started.discard(session.id)
+        view = self.answer_views.pop(session.id, None)
+        if view:
+            view.stop()
+        return success
+
+    async def restore_question(self, session):
+        if not await self.finish_question_hide(session):
+            self.cancel_timer(session)
+            await session.pause()
+            await self.persist(session)
+            await self.update_controls(session)
+            await self.send_session_message(
+                session.id,
+                self.channel(session),
+                content="Question deletion failed. The game is paused; use /game resume after restoring message access.",
+            )
+            return False
+        if session.id in self.hidden_questions and session.current:
+            if not await self.post_question(session):
+                return False
+            self.hidden_questions.discard(session.id)
+        return True
 
     async def send_session_message(self, session_id, channel, **kwargs):
         message = await channel.send(**kwargs)
@@ -281,6 +383,8 @@ class BowlBot(discord.Client):
         self.timers[session.id] = self.spawn(timer())
 
     async def update_controls(self, session):
+        if session.state in ("paused", "finished"):
+            await self.finish_question_hide(session)
         self.stop_question_view(session)
         message = self.messages.get(session.id)
         if message:
@@ -293,6 +397,8 @@ class BowlBot(discord.Client):
 
     async def advance(self, session, already_open=False):
         self.cancel_timer(session)
+        await self.finish_question_hide(session)
+        self.hidden_questions.discard(session.id)
         self.stop_question_view(session)
         question = session.current if already_open else await session.next_question()
         if question is None:
@@ -300,6 +406,14 @@ class BowlBot(discord.Client):
                 await self.finalize(session)
             return
         await self.persist(session)
+        if not await self.post_question(session):
+            return
+        await session.refresh_deadline(session.round_id)
+        self.schedule_deadline(session)
+
+    async def post_question(self, session):
+        question = session.current
+        self.question_messages[session.id] = []
         text = question.text
         if question.choices:
             text += "\n\n" + "\n".join(f"{key}) {value}" for key, value in question.choices.items())
@@ -316,18 +430,20 @@ class BowlBot(discord.Client):
                     embed=embed,
                     view=self.question_view(session) if index == len(parts) - 1 else None,
                 )
+                self.question_messages[session.id].append(message)
             except discord.HTTPException:
                 await session.pause()
                 await self.persist(session)
                 log.warning("Question delivery failed; session %s paused", session.id)
-                return
+                return False
         self.messages[session.id] = message
-        await session.refresh_deadline(session.round_id)
-        self.schedule_deadline(session)
+        return True
 
     async def reveal(self, session, label):
         self.cancel_timer(session)
         await self.persist(session)
+        if not await self.restore_question(session):
+            return
         await self.update_controls(session)
         if session.current:
             for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
@@ -357,6 +473,8 @@ class BowlBot(discord.Client):
         """Offer a rebound without leaking the official answer or judge explanation."""
         self.cancel_timer(session)
         await self.persist(session)
+        if not await self.restore_question(session):
+            return
         await self.update_controls(session)
         try:
             await self.send_session_message(
@@ -453,6 +571,8 @@ class BowlBot(discord.Client):
             if session.channel_id not in self.sessions:
                 self.channels.pop(session.channel_id, None)
             self.messages.pop(session.id, None)
+            self.question_messages.pop(session.id, None)
+            self.hidden_questions.discard(session.id)
             self.last_activity.pop(session.id, None)
             self.operations.pop(session.id, None)
 

@@ -2,6 +2,8 @@
 
 ## Playtest feedback checkpoint
 
+- Shared questions remain public. Two seconds after a valid buzz, delete every message containing that question, including choices and overflow chunks. A private Answer button and /answer remain usable. Restore the question after correct/incorrect/ungraded judgments and answer timeouts; wrong/timeouts reset the full configured buzz window after redelivery, retaining per-player lockouts. Cancel pending deletion when an early verdict closes the claim. Deletion runs during API judging without blocking on its operation lock; lifecycle actions wait for in-flight deletion before restoring or advancing. Solo play is unchanged. There is no additional reading-delay setting.
+
 - Shared incorrect answers and answer timeouts reopen the same question for other players; the failed player is locked out of that question. Only one claim is active at a time. The configured `answer_seconds` remains authoritative (no hardcoded ten-second timeout). A correct answer, API failure, moderator skip, or expired open buzz window closes the question.
 - `/game start` and `/practice start` open a private setup panel initialized from explicit options, saved defaults, then built-ins. Categories use a multi-select; pool/format/source/role use selects; count/timers use a numeric modal. Starting is an explicit button action. Existing personal `/settings` remains available.
 - Reporting has been removed at the user's request. Legacy report data remains untouched. Clearing chat must not delete saved results.

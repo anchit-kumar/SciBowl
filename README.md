@@ -33,6 +33,8 @@ The application command interface supports `/game start`, `/practice start`, `/s
 
 Start commands open private setup panels with multi-select categories, dropdown filters, and count/timer forms. Wrong shared answers or answer timeouts lock out that player for the question while others can buzz; the answer stays hidden until the question closes. `/help` displays the command list in an embed.
 
+Shared question messages disappear for everyone two seconds after a successful buzz. The buzzer keeps a private Answer button and can use `/answer`. The question returns after judging or an answer timeout; incorrect answers/timeouts restart the full configured buzz window for eligible players. An answer judged before two seconds cancels the pending deletion. Solo practice stays visible.
+
 `/clear` removes tracked bot messages from the latest finished session and the caller's recent tracked private replies, while retaining saved results. Reporting has been removed; existing report files remain local.
 
 Ready for your main server? Follow the [production server setup](docs/PRODUCTION.md).

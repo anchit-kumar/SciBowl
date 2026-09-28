@@ -69,8 +69,8 @@ Examples:
 
 | Control | Description |
 | --- | --- |
-| Buzz | Claim the current shared question; only the first valid buzz succeeds. |
-| Answer | Open the answer-entry form. |
+| Buzz | Claim the current shared question; only the first valid buzz succeeds. The public question disappears two seconds later. |
+| Answer | Open the answer-entry form. The buzzer receives a private button that remains usable after the public question disappears. `/answer` also works. |
 | Reveal / Next / Stop | Solo controls to reveal an unanswered question, advance, or finish. |
 | My Review | Open your private saved review from the final leaderboard. |
 | Review navigation | Move between review pages and switch between missed, skipped, and ungraded attempts. Only the review owner can use it. |
@@ -84,6 +84,13 @@ timeout review category. Timers use your configured values. The answer stays
 hidden during retries. API failures are
 ungraded and do not lower accuracy. Disabled or blocked DMs still leave private
 access through `/review`. Review buttons require the bot to be online.
+
+The public question text and choices are deleted two seconds after a successful
+buzz, then reposted after judging or an answer timeout. Incorrect answers and
+answer timeouts reset the full `buzz_seconds` window after the question is restored.
+Correct answers reveal the result and advance normally. If judging finishes before
+two seconds, the pending deletion is canceled. The two-second delay is fixed;
+the existing buzz and answer timers remain configurable. Solo questions stay visible.
 
 `/clear` can remove only messages tracked by this version. Ephemeral replies older
 than the interaction-token lifetime (15 minutes), or from before a bot restart,
