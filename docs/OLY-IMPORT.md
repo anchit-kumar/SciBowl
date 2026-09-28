@@ -6,9 +6,37 @@ Imported into the configured local SQLite database on September 27, 2026 (local 
 
 **2,621 questions added; 2,700 total.** The original 79 questions remain unchanged.
 Source packets came from the user-requested [Oly archive](https://oly.mehvix.com/).
-146 PDFs were downloaded across the selected collections, including one mirrored
-regional collection. Packets with unreliable extraction did not contribute
-playable questions.
+The initial import used a download set of 146 PDFs across selected collections,
+including one mirrored regional collection. Packets with unreliable extraction
+did not contribute playable questions. The full archive was subsequently
+downloaded as described below.
+
+## Complete PDF archive download
+
+At the user's request, all **400 Science Bowl PDFs** listed in Oly's current
+`file_structure.js` catalog are now stored locally under `downloads/oly/`,
+organized by the archive's folders. This includes combined packets and
+supplementary PDFs. Total size: **88,199,501 bytes (88.2 MB / 84.1 MiB)** across
+20 folders. Existing PDFs were reused; original import manifests were preserved.
+
+Verification completed September 27, 2026 (local time): 400 catalog entries,
+400 verified files, 400 distinct SHA-256 hashes, and no download failures. Each
+file was reread to verify its PDF header/end marker, byte size, and checksum.
+These are download-integrity checks, not validation of extracted question text.
+
+- `downloads/oly/catalog-full.json`: complete Science Bowl PDF path list.
+- `downloads/oly/file_structure-full.js`: saved source catalog.
+- `downloads/oly/manifest-full.json`: per-file source URL, local path, size,
+  SHA-256, and verification summary.
+- `staging/download_all_oly.py`: local resumable download helper (three parallel
+  requests, bounded retries, atomic file writes).
+
+All of these artifacts remain ignored by Git. **Downloading the complete archive
+does not add questions to SQLite**: the playable bank still contains the 2,700
+reviewed questions documented here. Additional packets need extraction, review,
+and deduplication through the import pipeline before becoming playable.
+
+## Imported question totals
 
 | Subject | Total |
 | --- | ---: |
