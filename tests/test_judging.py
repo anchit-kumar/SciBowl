@@ -1,4 +1,7 @@
 import asyncio
+import json
+
+import pytest
 
 from scibowl.judging import AnswerJudge
 from scibowl.models import Question
@@ -159,3 +162,73 @@ async def test_rate_limit_cooldown_skips_requests():
     assert (await judge.judge(question, "first")).verdict == "ungraded"
     assert (await judge.judge(question, "second")).verdict == "ungraded"
     assert calls == 1
+
+
+async def test_typo_policy_is_sent_to_mock_provider():
+    judge = AnswerJudge()
+    assert judge.policy_version == "v4"
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            prompt = json.loads(kwargs["messages"][1]["content"])
+            assert prompt["submitted_answer"] == "Hei lmu"
+            assert prompt["official_answer"] == "HELIUM"
+            rules = " ".join(prompt["rules"])
+            for required in (
+                "Hei lmu",
+                "unambiguous",
+                "uncertain",
+                "mitosis versus meiosis",
+                "nitrate versus nitrite",
+                "CO versus Co",
+                "H2O versus H2O2",
+                "mW versus MW",
+                "+2 versus -2",
+                "positive versus not positive",
+            ):
+                assert required in rules
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "verdict": "correct",
+                                    "explanation": "Unambiguous spelling error for helium.",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class FakeClient:
+        class chat:
+            completions = FakeCompletions()
+
+    judge._client = FakeClient()
+    result = await judge.judge(
+        Question("helium", "Which element has atomic number 2?", "HELIUM", "Chemistry"),
+        "Hei lmu",
+    )
+    assert result.verdict == "correct"
+    assert result.method == "groq"
+
+
+@pytest.mark.parametrize(
+    ("expected", "answer"),
+    [
+        ("HELIUM", "Hei lmu"),
+        ("mitosis", "meiosis"),
+        ("nitrate", "nitrite"),
+        ("silicon", "selenium"),
+        ("CO", "Co"),
+        ("H2O", "H2O2"),
+        ("mW", "MW"),
+        ("+2", "-2"),
+        ("positive", "not positive"),
+    ],
+)
+async def test_typos_never_trigger_blanket_local_fuzzy_acceptance(expected, answer):
+    result = await AnswerJudge().judge(Question("q", "", expected, "Chemistry"), answer)
+    assert result.verdict == "ungraded"

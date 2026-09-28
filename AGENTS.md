@@ -10,7 +10,7 @@
 ## Required behavior
 
 - Provide automatic shared play usable as FFA or casual practice, plus separate private solo practice with category filtering. No teams or mandatory host.
-- Display full question text. First valid Buzz claims a question; the player submits an answer, the bot judges and reveals it, then shared play advances automatically.
+- Display full question text. First valid Buzz claims a question. Shared wrong answers and answer timeouts count as misses and lock that player out for that question, allowing other players to buzz. Only reveal the official answer after a correct answer, an ungraded API failure, a skip, or expiration of the open buzz window; then advance automatically. Answer time uses the configurable setting.
 - Keep question retrieval local and fast. Use a reusable PDF parsing, staging, validation, and SQLite import pipeline for future packets. Preserve provenance, review uncertain extraction, and prevent duplicate imports.
 - Use released DOE high school questions and MIT/Stanford invitational packets for the harder practice pool. Do not equate source labels with calibrated difficulty.
 - Judge multiple choice and clear accepted-answer matches locally. Use GroqCloud for other short answers. Preserve scientific distinctions such as units, signs, formulas, and negation.
@@ -20,6 +20,8 @@
 - /settings is a private player settings page with separate shared/solo defaults and a DM-review opt-in/out toggle. DM reviews default to On. Resolve start options as explicit command options, then the starter's saved profile, then built-in defaults.
 - Personal gameplay changes affect future sessions; check each player's current DM preference when sending results. Other participants' defaults must not change a shared game.
 - Reserve /admin settings for server-manager controls such as allowed channels.
+- Start commands open a private setup panel with multi-select categories, dropdown filters, numeric fields, and an explicit Start button. Keep personal /settings separate.
+- Reports preserve question and reporter-attempt snapshots and export one ignored local JSON file per session. /clear removes tracked bot messages for a finished session without deleting results, reports, or user messages; recent private replies are removable only while Discord interaction tokens remain usable.
 
 ## Development workflow
 

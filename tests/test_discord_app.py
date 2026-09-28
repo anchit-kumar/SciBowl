@@ -85,6 +85,7 @@ async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
         saved = default_settings("shared")
         saved.update({"count": 7, "categories": ["Physics"], "pool": "all", "buzz_seconds": 20})
         bot.store.get_settings = AsyncMock(return_value=saved)
+        bot.store.sources = AsyncMock(return_value=[])
         bot.start_session = AsyncMock()
         command = next(item for item in bot.tree.get_commands() if item.name == "game").get_command(
             "start"
@@ -102,9 +103,10 @@ async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
             answer_seconds=40,
         )
 
-        bot.start_session.assert_awaited_once()
-        _, mode, resolved = bot.start_session.await_args.args
-        assert mode == "shared"
+        bot.start_session.assert_not_awaited()
+        panel = request.followup.send.await_args.kwargs["view"]
+        resolved = panel.settings
+        assert panel.mode == "shared"
         assert resolved["count"] == 11
         assert resolved["categories"] == ["Chemistry"]
         assert resolved["pool"] == "all"

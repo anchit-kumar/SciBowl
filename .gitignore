@@ -14,5 +14,6 @@ data/
 downloads/
 backups/
 logs/
+reports/
 staging/
 *.sqlite*

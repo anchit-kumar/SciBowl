@@ -7,19 +7,20 @@ square brackets are optional; do not type the brackets.
 
 | Command | Brief description |
 | --- | --- |
-| `/game start` | Start shared play in the current channel using your saved defaults. Players compete by buzzing first. |
+| `/game start` | Open a private shared-game setup panel using your saved defaults. Adjust settings, then press Start game. |
 | `/game pause` | Pause the current session. The unfinished question is discarded when resumed. |
 | `/game resume` | Resume a paused or recovered session with a fresh question. |
 | `/game skip` | Skip the open question and reveal its answer. Shared play advances automatically. |
 | `/game stop` | End the current session, save results, and post the final leaderboard. |
-| `/practice start` | Choose categories and start untimed solo practice in a private thread. Run from a regular text channel. |
+| `/practice start` | Open private solo setup. Select one or more categories, adjust filters/count, then press Start practice. Run from a regular text channel. |
 | `/practice stop` | End your solo practice and save its leaderboard and review. Can also find your active practice from outside its thread. |
 | `/answer text:<answer>` | Submit an answer after winning the buzz, or answer your solo question. Accepts 1–1,000 characters. |
 | `/settings` | Open your private shared/solo defaults and review-DM toggle. Use Save to apply changes to future games. |
 | `/review [game:<game_id>]` | Privately review your latest finished game, or a specific game you participated in. |
 | `/score` | Show the first page of the current session's leaderboard privately. |
 | `/sources` | List imported question sources, pools, and question counts. |
-| `/report reason:<description>` | Save a report about the current question or judgment for local review. Accepts 1–1,000 characters. |
+| `/report reason:<description> [question:<number>] [kind:question\|judgment]` | Report the current/latest question or a specific round in this channel's latest session. Saves source/question details and your own attempt to a per-session local report file. |
+| `/clear` | Clear tracked bot messages from this channel's latest finished session, plus your recent tracked private replies. Starter or Manage Server required; stop active games first. Scores/reviews/reports and user messages are kept. |
 | `/stats` | Show your saved accuracy by game mode and category. Skipped and ungraded attempts are excluded. |
 | `/status` | Show uptime, Discord connection latency, bank size, active sessions, and whether Groq is configured. |
 | `/help` | Show a short gameplay and controls guide. |
@@ -38,7 +39,7 @@ built-in defaults. A shared game uses only its starter's settings.
 | Option | Available on | Values / meaning |
 | --- | --- | --- |
 | `count` | `/game start`, `/practice start` | 1–100 questions; built-in default 20. Uses fewer if not enough match. |
-| `category` | `/game start` | One category listed below, or `all`. For multiple categories, use `/settings`. |
+| `category` | `/game start` | Comma-separated categories with autocomplete, or `all`. The setup panel also provides a category multi-select. |
 | `pool` | Both start commands | `regional`, `invitational`, or `all`. Built-in default `regional`. |
 | `source` | Both start commands | Exact source name from `/sources`, or `all`. |
 | `format` | Both start commands | `short_answer`, `multiple_choice`, or `all`. |
@@ -50,11 +51,15 @@ Categories: `Biology`, `Chemistry`, `Earth and Space Science`, `Energy`,
 `Mathematics`, `Physics`, and `General Science`. Solo practice presents a category
 selection menu after `/practice start`. A category may have no imported questions.
 
+Both start commands show dropdown filters; numerical values use number-entry forms.
+Changing the session setup does not overwrite personal `/settings`. Static slash
+options offer choices; source and category options offer autocomplete.
+
 Examples:
 
 ```text
 /game start count:5
-/game start count:10 category:Physics format:multiple_choice
+/game start count:10 category:Physics,Chemistry format:multiple_choice
 /game start count:10 pool:invitational
 /practice start count:10 pool:all role:all
 /answer text:mitochondria
@@ -73,9 +78,18 @@ Examples:
 | Settings Save / Cancel / Reset | Save your draft preferences, discard changes, or reset the selected profile's gameplay defaults. |
 | DM-review toggle | Enable or disable review DMs; defaults to On. Your current preference is checked when results are sent. |
 
-Correct answers earn 4 points; mistakes do not subtract points. API failures are
+Correct answers earn 4 points; mistakes do not subtract points. A shared wrong
+answer or answer timeout locks that player out for the current question and
+reopens buzzing for others. Timeouts count as accuracy misses and remain in the
+timeout review category. Timers use your configured values. The answer stays
+hidden during retries. API failures are
 ungraded and do not lower accuracy. Disabled or blocked DMs still leave private
 access through `/review`. Review buttons require the bot to be online.
+
+`/clear` can remove only messages tracked by this version. Ephemeral replies older
+than the interaction-token lifetime (15 minutes), or from before a bot restart,
+may need Discord's **Dismiss message**. Clearing removes only the caller's tracked
+private replies, not another player's reviews or DMs.
 
 ## Terminal commands
 
@@ -94,6 +108,7 @@ Run from the project directory. Credentials come from the ignored local `.env`.
 | `uv run scibowl bank import FILE` | Validate and import approved questions into SQLite, skipping duplicate IDs. |
 | `uv run scibowl db backup PATH` | Save a consistent SQLite backup to a new file. |
 | `uv run scibowl db restore PATH` | Restore a backup into a new, nonexistent `SCIBOWL_DB` path. Stop the bot and update `.env` first. |
+| `uv run scibowl reports export [--game SESSION_ID]` | Rebuild report JSON files from SQLite, for one session or all sessions. Files are placed beside the database in `reports/` (normally `data/reports/`). |
 
 `bank parse` requires `--source`. Optional flags:
 

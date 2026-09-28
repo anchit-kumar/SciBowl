@@ -87,7 +87,7 @@ class AnswerJudge:
         self.model = model
         self._client: Any | None = None
         self._cooldown_until = 0.0
-        self.policy_version = "v3"
+        self.policy_version = "v4"
         if api_key:
             # Import lazily so local-only installs and tests do not need network setup.
             from groq import AsyncGroq
@@ -176,6 +176,20 @@ class AnswerJudge:
                     "Require semantic equivalence. Reject differing signs, chemical formulae, or negation. "
                     "Accept numerically and dimensionally equivalent unit conversions unless the question "
                     "explicitly requires the requested unit; otherwise reject a differing unit."
+                ),
+                (
+                    "Accept spelling errors, transposed letters, and accidental spaces in ordinary "
+                    "words when the question context makes the intended official answer unambiguous. "
+                    "For example, when naming the element helium, 'Hei lmu' may be accepted as HELIUM. "
+                    "Do not require correct spelling alone. If the intended meaning is ambiguous, "
+                    "return uncertain."
+                ),
+                (
+                    "Typo tolerance must never change scientific meaning. Reject distinct scientific "
+                    "terms such as mitosis versus meiosis, nitrate versus nitrite, and silicon versus "
+                    "selenium. Do not autocorrect formulae (CO versus Co, H2O versus H2O2), "
+                    "unit prefixes (mW versus MW), signs (+2 versus -2), or negation "
+                    "(positive versus not positive). Similar spelling alone is insufficient."
                 ),
             ],
         }

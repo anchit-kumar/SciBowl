@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import copy
 import logging
 import sqlite3
 import time
@@ -14,6 +15,8 @@ from discord import app_commands
 from .engine import Session
 from .judging import AnswerJudge
 from .models import CATEGORIES, validate_settings
+from .session_messages import PrivateMessages
+from .setup_ui import GameSetupView, help_embed
 from .storage import Store
 from .ui import SettingsView, button, chunks, result_view, review_pages, review_view
 
@@ -72,18 +75,23 @@ class QuestionView(discord.ui.View):
             ) is not self.session or not await self.session.buzz(
                 interaction.user.id, self.round_id
             ):
-                return await interaction.followup.send(
-                    "Another player claimed this question, or its timer expired.", ephemeral=True
+                return await self.app.private_reply(
+                    interaction,
+                    self.session.id,
+                    "Another player claimed this question, you already missed it, or its timer expired.",
                 )
             await self.app.persist(self.session)
             await self.app.update_controls(self.session)
             self.app.schedule_deadline(self.session)
-            await interaction.followup.send(
+            await self.app.private_reply(
+                interaction,
+                self.session.id,
                 "You buzzed first. Press Answer or use /answer before time runs out.",
-                ephemeral=True,
             )
-            await self.app.channel(self.session).send(
-                f"<@{interaction.user.id}> buzzed first.",
+            await self.app.send_session_message(
+                self.session.id,
+                self.app.channel(self.session),
+                content=f"<@{interaction.user.id}> buzzed first.",
                 allowed_mentions=discord.AllowedMentions.none(),
             )
 
@@ -127,46 +135,6 @@ class QuestionView(discord.ui.View):
             await self.app.finalize(self.session, early=True)
 
 
-class CategoryStartView(discord.ui.View):
-    def __init__(self, app, owner, settings):
-        super().__init__(timeout=300)
-        self.app, self.owner, self.settings = app, owner, dict(settings)
-        select = discord.ui.Select(
-            placeholder="Practice categories",
-            min_values=1,
-            max_values=len(CATEGORIES),
-            options=[
-                discord.SelectOption(label=c, value=c, default=c in settings["categories"])
-                for c in CATEGORIES
-            ],
-        )
-
-        async def choose(interaction):
-            self.settings["categories"] = list(select.values)
-            await interaction.response.edit_message(
-                content="Categories selected. Press Start practice.", view=self
-            )
-
-        select.callback = choose
-        self.add_item(select)
-
-        async def start(interaction):
-            await interaction.response.defer(ephemeral=True)
-            await self.app.start_session(interaction, "solo", self.settings)
-            self.stop()
-            await interaction.edit_original_response(view=None)
-
-        self.add_item(button("Start practice", start, style=discord.ButtonStyle.success))
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.owner:
-            await interaction.response.send_message(
-                "This setup belongs to another player.", ephemeral=True
-            )
-            return False
-        return True
-
-
 class BowlBot(discord.Client):
     def __init__(
         self, db_path, api_key=None, model="openai/gpt-oss-20b", guild_id=None, sync_only=False
@@ -188,6 +156,7 @@ class BowlBot(discord.Client):
         self.last_activity = {}
         self.background = set()
         self.start_lock = asyncio.Lock()
+        self.private_messages = PrivateMessages()
         self.started = time.monotonic()
         self.install_commands()
 
@@ -246,6 +215,25 @@ class BowlBot(discord.Client):
     def touch(self, session):
         self.last_activity[session.id] = time.monotonic()
 
+    async def private_reply(self, interaction, session_id, content):
+        message = await interaction.followup.send(content, ephemeral=True, wait=True)
+        self.private_messages.remember(session_id, interaction.user.id, message)
+        return message
+
+    async def send_session_message(self, session_id, channel, **kwargs):
+        message = await channel.send(**kwargs)
+        if isinstance(getattr(message, "id", None), int):
+            try:
+                await self.store.track_message(session_id, channel.id, message.id)
+            except (sqlite3.Error, OSError):
+                session = self.sessions.get(channel.id)
+                if session and session.id == session_id:
+                    self.cancel_timer(session)
+                    await session.pause()
+                    self.stop_question_view(session)
+                raise
+        return message
+
     async def persist(self, session):
         try:
             await self.store.save_session(session.id, session.snapshot())
@@ -284,7 +272,12 @@ class BowlBot(discord.Client):
             await asyncio.sleep(seconds + 0.05)
             async with self.operation_lock(session):
                 if await session.timeout(round_id):
-                    await self.reveal(session, "Time expired")
+                    if session.state == "open":
+                        await self.reopen_question(
+                            session, "Answer time expired. That attempt counts as a miss."
+                        )
+                    else:
+                        await self.reveal(session, "Time expired")
 
         self.timers[session.id] = self.spawn(timer())
 
@@ -308,6 +301,11 @@ class BowlBot(discord.Client):
                 await self.finalize(session)
             return
         await self.persist(session)
+        try:
+            await self.store.record_question(session.id, session.round_id, question.to_dict())
+        except (sqlite3.Error, OSError):
+            await session.pause()
+            raise
         text = question.text
         if question.choices:
             text += "\n\n" + "\n".join(f"{key}) {value}" for key, value in question.choices.items())
@@ -318,7 +316,9 @@ class BowlBot(discord.Client):
             )
             embed.set_footer(text=f"{question.format} · {question.source}"[:2048])
             try:
-                message = await self.channel(session).send(
+                message = await self.send_session_message(
+                    session.id,
+                    self.channel(session),
                     embed=embed,
                     view=self.question_view(session) if index == len(parts) - 1 else None,
                 )
@@ -338,8 +338,10 @@ class BowlBot(discord.Client):
         if session.current:
             for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
                 try:
-                    await self.channel(session).send(
-                        embed=discord.Embed(title="Result", description=part)
+                    await self.send_session_message(
+                        session.id,
+                        self.channel(session),
+                        embed=discord.Embed(title="Result", description=part),
                     )
                 except discord.HTTPException:
                     await session.pause()
@@ -357,6 +359,28 @@ class BowlBot(discord.Client):
 
             self.timers[session.id] = self.spawn(next_later())
 
+    async def reopen_question(self, session, label):
+        """Offer a rebound without leaking the official answer or judge explanation."""
+        self.cancel_timer(session)
+        await self.persist(session)
+        await self.update_controls(session)
+        try:
+            await self.send_session_message(
+                session.id,
+                self.channel(session),
+                embed=discord.Embed(
+                    title="Buzz again",
+                    description=f"{label}\nOther players can buzz. The previous player cannot retry this question.",
+                ),
+            )
+        except discord.HTTPException:
+            await session.pause()
+            await self.persist(session)
+            await self.update_controls(session)
+            return
+        await session.refresh_deadline(session.round_id)
+        self.schedule_deadline(session)
+
     async def submit_answer(self, interaction, session, round_id, text):
         await interaction.response.defer(ephemeral=True)
         async with self.operation_lock(session):
@@ -371,6 +395,25 @@ class BowlBot(discord.Client):
                 )
             self.touch(session)
             result = await session.submit(interaction.user.id, round_id, text, self.judge)
+            if session.state == "open":
+                try:
+                    await self.reopen_question(
+                        session,
+                        "Answer time expired."
+                        if result.verdict == "timeout"
+                        else "Incorrect answer.",
+                    )
+                except (sqlite3.Error, OSError):
+                    return await self.private_reply(
+                        interaction,
+                        session.id,
+                        "Could not save the attempt. The game is paused; restore database access and resume before restarting.",
+                    )
+                return await self.private_reply(
+                    interaction,
+                    session.id,
+                    "Your attempt was recorded. Other players may now buzz; you cannot retry this question.",
+                )
             if session.state == "revealed":
                 label = f"{result.verdict.title()}: {result.explanation}"
                 if result.verdict == "ungraded" and result.method != "state":
@@ -386,12 +429,13 @@ class BowlBot(discord.Client):
                         "before restarting the bot.",
                         ephemeral=True,
                     )
-            await interaction.followup.send(
+            await self.private_reply(
+                interaction,
+                session.id,
                 "Answer saved, but I could not post the result. The session is paused; "
                 "restore channel permissions and use /game resume."
                 if session.state == "paused"
                 else "Answer processed.",
-                ephemeral=True,
             )
 
     async def finalize(self, session, early=False):
@@ -434,7 +478,9 @@ class BowlBot(discord.Client):
     async def post_leaderboard(self, channel, payload):
         pages = self.board_pages(payload)
         view = self.leaderboard_view(payload["id"], 0, len(pages))
-        await channel.send(
+        await self.send_session_message(
+            payload["id"],
+            channel,
             embed=discord.Embed(
                 title="Leaderboard · "
                 + ("ended early" if payload.get("ended_early") else "finished"),
@@ -542,41 +588,47 @@ class BowlBot(discord.Client):
             if not interaction.guild or not isinstance(
                 interaction.channel, (discord.TextChannel, discord.Thread)
             ):
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "Start games in a server text channel.", ephemeral=True
                 )
+                return False
             parent_id = (
                 interaction.channel.parent_id
                 if isinstance(interaction.channel, discord.Thread)
                 else interaction.channel_id
             )
             if not await self.store.allowed(interaction.guild_id, parent_id):
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "Games are not enabled in this channel.", ephemeral=True
                 )
+                return False
             if mode == "shared" and interaction.channel_id in self.sessions:
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "A session already exists here. Use /game resume or /game stop.", ephemeral=True
                 )
+                return False
             if mode == "solo" and any(
                 s.mode == "solo" and s.starter_id == interaction.user.id
                 for s in self.sessions.values()
             ):
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "You already have a practice session. Finish it first.", ephemeral=True
                 )
+                return False
             questions = await self.store.questions(settings)
             if not questions:
-                return await interaction.followup.send(
+                await interaction.followup.send(
                     "No questions match these settings. Import reviewed packets or edit /settings.",
                     ephemeral=True,
                 )
+                return False
             channel = interaction.channel
             if mode == "solo":
                 if not isinstance(channel, discord.TextChannel):
-                    return await interaction.followup.send(
+                    await interaction.followup.send(
                         "Start private practice from a regular text channel.", ephemeral=True
                     )
+                    return False
                 try:
                     channel = await channel.create_thread(
                         name=f"Practice · {interaction.user.display_name}"[:100],
@@ -585,10 +637,11 @@ class BowlBot(discord.Client):
                     )
                     await channel.add_user(interaction.user)
                 except discord.Forbidden:
-                    return await interaction.followup.send(
+                    await interaction.followup.send(
                         "Private practice needs Create Private Threads and Send Messages in Threads permissions.",
                         ephemeral=True,
                     )
+                    return False
             session = Session(
                 uuid.uuid4().hex[:16], channel.id, interaction.user.id, mode, settings, questions
             )
@@ -596,10 +649,15 @@ class BowlBot(discord.Client):
             self.sessions[channel.id] = session
             self.touch(session)
             await self.persist(session)
+            if getattr(interaction, "message", None) is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    setup_message = await interaction.original_response()
+                    self.private_messages.remember(session.id, interaction.user.id, setup_message)
             try:
-                await interaction.followup.send(
+                await self.private_reply(
+                    interaction,
+                    session.id,
                     f"Starting {len(questions)} questions in {channel.mention}.\nCategories: {', '.join(settings['categories'])}\nPool: {settings['pool']} · Source: {settings['source']} · Format: {settings['format']}",
-                    ephemeral=True,
                 )
             except discord.HTTPException:
                 log.warning("Start acknowledgment failed for session %s", session.id)
@@ -611,6 +669,8 @@ class BowlBot(discord.Client):
                     "permissions and use /game resume in the session channel.",
                     ephemeral=True,
                 )
+
+            return True
 
     async def control(self, interaction, action, mode=None):
         await interaction.response.defer(ephemeral=True)
@@ -665,18 +725,119 @@ class BowlBot(discord.Client):
                     )
                 await session.skip()
                 await self.reveal(session, "Skipped")
-        await interaction.followup.send(
+        await self.private_reply(
+            interaction,
+            session.id,
             "Delivery failed and the session is paused. Restore channel permissions "
             "and use /game resume."
             if action in ("resume", "skip") and session.state == "paused"
             else f"Session {action} processed.",
+        )
+
+    async def clear_session_messages(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            return await interaction.followup.send(
+                "Use /clear in the session's server channel.", ephemeral=True
+            )
+        async with self.start_lock:
+            if interaction.channel_id in self.sessions:
+                return await interaction.followup.send(
+                    "Stop the active game before clearing its messages.", ephemeral=True
+                )
+            payload = await self.store.latest_channel_session(interaction.channel_id)
+            if not payload:
+                return await interaction.followup.send(
+                    "No saved session found in this channel.", ephemeral=True
+                )
+            if (
+                interaction.user.id != payload["starter_id"]
+                and not interaction.permissions.manage_guild
+            ):
+                return await interaction.followup.send(
+                    "Only the session starter or a server manager can clear it.", ephemeral=True
+                )
+            removed, failed = 0, 0
+            for entry in await self.store.session_messages(payload["id"]):
+                if entry["channel_id"] != interaction.channel_id:
+                    continue
+                try:
+                    await interaction.channel.get_partial_message(entry["message_id"]).delete()
+                    removed += 1
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    failed += 1
+                    continue
+                await self.store.forget_message(payload["id"], entry["message_id"])
+            private_removed, private_failed = await self.private_messages.clear(
+                payload["id"], interaction.user.id
+            )
+        await interaction.followup.send(
+            f"Cleared {removed} session messages and {private_removed} of your recent private replies. "
+            f"{failed + private_failed} could not be removed. Saved scores, reviews, and reports are kept. "
+            "Older private replies (or replies from before a restart) may need Dismiss message. "
+            "Only messages tracked by this version can be cleared.",
             ephemeral=True,
         )
+
+    async def save_question_report(self, interaction, reason, question=None, kind="question"):
+        await interaction.response.defer(ephemeral=True)
+        session = self.sessions.get(interaction.channel_id)
+        payload = (
+            copy.deepcopy(session.snapshot())
+            if session
+            else await self.store.latest_channel_session(interaction.channel_id)
+        )
+        if not payload:
+            return await interaction.followup.send(
+                "No session found in this channel to report.", ephemeral=True
+            )
+        selected_round = question
+        if selected_round is None and session and session.current:
+            selected_round = session.round_id
+        record = await self.store.session_question(payload["id"], selected_round)
+        if not record:
+            return await interaction.followup.send(
+                "No recorded question found. Choose a question number from this session.",
+                ephemeral=True,
+            )
+        snapshot = record["question"]
+        attempt = next(
+            (
+                item
+                for item in reversed(payload.get("attempts", []))
+                if item["user_id"] == interaction.user.id and item["round_id"] == record["round_id"]
+            ),
+            None,
+        )
+        report_id = await self.store.report(
+            interaction.user.id,
+            payload["id"],
+            snapshot["id"],
+            reason,
+            details={
+                "kind": kind,
+                "channel_id": interaction.channel_id,
+                "guild_id": interaction.guild_id,
+                "round_id": record["round_id"],
+                "question": snapshot,
+                "attempt": attempt,
+            },
+        )
+        try:
+            await self.store.export_reports(payload["id"])
+            message = f"Report #{report_id} saved with question {record['round_id']} for session {payload['id']}."
+        except OSError:
+            message = f"Report #{report_id} is saved in the database. The local file export needs a retry."
+            log.warning("Report export failed for session %s", payload["id"])
+        await self.private_reply(interaction, payload["id"], message)
 
     async def maintenance(self):
         await self.wait_until_ready()
         last_backup = None
         while not self.is_closed():
+            self.private_messages.prune()
             today = datetime.now(UTC).date().isoformat()
             if today != last_backup:
                 try:
@@ -722,7 +883,22 @@ class BowlBot(discord.Client):
             validate_settings(value)
             return value
 
-        @game.command(name="start", description="Start automatic play using your personal defaults")
+        @game.command(
+            name="start", description="Open shared game setup using your personal defaults"
+        )
+        @app_commands.choices(
+            pool=[
+                app_commands.Choice(name=x.title(), value=x)
+                for x in ("regional", "invitational", "all")
+            ],
+            format=[
+                app_commands.Choice(name=x.replace("_", " ").title(), value=x)
+                for x in ("short_answer", "multiple_choice", "all")
+            ],
+        )
+        @app_commands.describe(
+            category="Comma-separated categories, or choose multiple in the setup panel"
+        )
         async def game_start(
             interaction: discord.Interaction,
             count: app_commands.Range[int, 1, 100] | None = None,
@@ -734,7 +910,19 @@ class BowlBot(discord.Client):
             answer_seconds: app_commands.Range[int, 5, 120] | None = None,
         ):
             await interaction.response.defer(ephemeral=True)
-            cats = list(CATEGORIES) if category == "all" else [category] if category else None
+            names = {item.casefold(): item for item in CATEGORIES}
+            cats = None
+            if category:
+                cats = (
+                    list(CATEGORIES)
+                    if category.casefold().strip() == "all"
+                    else list(
+                        dict.fromkeys(
+                            names.get(part.strip().casefold(), part.strip())
+                            for part in category.split(",")
+                        )
+                    )
+                )
             settings = await options(
                 interaction.user.id,
                 "shared",
@@ -746,9 +934,23 @@ class BowlBot(discord.Client):
                 buzz_seconds=buzz_seconds,
                 answer_seconds=answer_seconds,
             )
-            await self.start_session(interaction, "shared", settings)
+            view = GameSetupView(
+                self, interaction.user.id, "shared", settings, await self.store.sources()
+            )
+            await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
         @practice.command(name="start", description="Choose categories for private practice")
+        @app_commands.choices(
+            pool=[
+                app_commands.Choice(name=x.title(), value=x)
+                for x in ("regional", "invitational", "all")
+            ],
+            format=[
+                app_commands.Choice(name=x.replace("_", " ").title(), value=x)
+                for x in ("short_answer", "multiple_choice", "all")
+            ],
+            role=[app_commands.Choice(name=x.title(), value=x) for x in ("tossup", "bonus", "all")],
+        )
         async def practice_start(
             interaction: discord.Interaction,
             count: app_commands.Range[int, 1, 100] | None = None,
@@ -757,6 +959,7 @@ class BowlBot(discord.Client):
             format: str | None = None,
             role: str | None = None,
         ):
+            await interaction.response.defer(ephemeral=True)
             settings = await options(
                 interaction.user.id,
                 "solo",
@@ -766,11 +969,36 @@ class BowlBot(discord.Client):
                 format=format,
                 role=role,
             )
-            await interaction.response.send_message(
-                "Choose categories, then Start practice.",
-                view=CategoryStartView(self, interaction.user.id, settings),
-                ephemeral=True,
+            view = GameSetupView(
+                self, interaction.user.id, "solo", settings, await self.store.sources()
             )
+            await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+
+        @game_start.autocomplete("category")
+        async def categories_autocomplete(interaction, current: str):
+            parts = current.split(",")
+            selected = [part.strip() for part in parts[:-1] if part.strip()]
+            query = parts[-1].strip().casefold()
+            choices = []
+            for name in CATEGORIES:
+                if name not in selected and query in name.casefold():
+                    value = ", ".join([*selected, name])
+                    if len(value) <= 100:
+                        choices.append(app_commands.Choice(name=value, value=value))
+            if not selected and (not query or "all".startswith(query)):
+                choices.append(app_commands.Choice(name="All categories", value="all"))
+            return choices[:25]
+
+        async def source_autocomplete(interaction, current: str):
+            names = ["all", *dict.fromkeys(item["source"] for item in await self.store.sources())]
+            return [
+                app_commands.Choice(name=name[:100], value=name)
+                for name in names
+                if len(name) <= 100 and current.casefold() in name.casefold()
+            ][:25]
+
+        game_start.autocomplete("source")(source_autocomplete)
+        practice_start.autocomplete("source")(source_autocomplete)
 
         @game.command(name="pause", description="Pause your session")
         async def pause(interaction: discord.Interaction):
@@ -865,19 +1093,28 @@ class BowlBot(discord.Client):
             )
             await interaction.response.send_message(text[:1900], ephemeral=True)
 
-        @self.tree.command(name="report", description="Flag the current question or judgment")
+        @self.tree.command(
+            name="clear", description="Clear bot messages from this channel's last session"
+        )
+        async def clear_command(interaction: discord.Interaction):
+            await self.clear_session_messages(interaction)
+
+        @self.tree.command(
+            name="report", description="Report a question or judgment in this session"
+        )
+        @app_commands.choices(
+            kind=[
+                app_commands.Choice(name="Question issue", value="question"),
+                app_commands.Choice(name="Judgment issue", value="judgment"),
+            ]
+        )
         async def report(
-            interaction: discord.Interaction, reason: app_commands.Range[str, 1, 1000]
+            interaction: discord.Interaction,
+            reason: app_commands.Range[str, 1, 1000],
+            question: app_commands.Range[int, 1, 100] | None = None,
+            kind: str = "question",
         ):
-            session = self.sessions.get(interaction.channel_id)
-            if not session or not session.current:
-                return await interaction.response.send_message(
-                    "No current question to report.", ephemeral=True
-                )
-            await self.store.report(interaction.user.id, session.id, session.current.id, reason)
-            await interaction.response.send_message(
-                "Report saved for local review.", ephemeral=True
-            )
+            await self.save_question_report(interaction, reason, question, kind)
 
         @self.tree.command(name="stats", description="Your saved accuracy by mode and category")
         async def stats(interaction: discord.Interaction):
@@ -914,7 +1151,7 @@ class BowlBot(discord.Client):
         @self.tree.command(name="help", description="Science Bowl controls")
         async def help_command(interaction: discord.Interaction):
             await interaction.response.send_message(
-                "Start /game start for shared play or /practice start for private study. Buzz first, then Answer. Correct answers earn 4 points; mistakes do not subtract points. /settings controls personal defaults and review DMs. Every finished session saves a leaderboard and /review. Starter or managers can /game pause, resume, skip, or stop.",
+                embed=help_embed(),
                 ephemeral=True,
             )
 

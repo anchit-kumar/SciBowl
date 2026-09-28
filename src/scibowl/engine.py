@@ -28,6 +28,7 @@ class Session:
         self.attempts: list[dict[str, Any]] = []
         self.round_id = 0
         self.winner_id: int | None = None
+        self.locked_out: set[int] = set()
         self.lock = asyncio.Lock()
         self._queue: deque[Question] = deque(
             questions[: int(self.settings.get("count", len(questions)))]
@@ -54,6 +55,7 @@ class Session:
                 return self.current
             self.current = self._queue.popleft() if self._queue else None
             self.winner_id = None
+            self.locked_out.clear()
             self._deadline = None
             if self.current is None:
                 self.state = "finished"
@@ -75,6 +77,7 @@ class Session:
                 self.state != "open"
                 or self.current is None
                 or round_id != self.round_id
+                or user_id in self.locked_out
                 or self._expired()
             ):
                 return False
@@ -110,6 +113,16 @@ class Session:
             }
         )
 
+    def _complete_attempt(self, user_id: int, verdict: str) -> None:
+        """Release a failed shared claim while keeping the question available to others."""
+        if self.mode == "shared" and verdict in {"incorrect", "timeout"}:
+            self.locked_out.add(user_id)
+            self.winner_id = None
+            self.state = "open"
+            self._deadline = time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+        else:
+            self.state, self._deadline = "revealed", None
+
     async def submit(self, user_id: int, round_id: int, text: str, judge: Any) -> Judgment:
         async with self.lock:
             if (
@@ -121,8 +134,8 @@ class Session:
                 return Judgment("ungraded", "This answer control is no longer active.", "state")
             if self._expired():
                 self._record(user_id, None, "timeout", "Answer time expired.")
-                self.state, self._deadline = "revealed", None
-                return Judgment("ungraded", "Answer time expired.", "state")
+                self._complete_attempt(user_id, "timeout")
+                return Judgment("timeout", "Answer time expired.", "state")
             self.state = "judging"
             # Holding the lock makes pause/skip/timeout wait for the active verdict.
             try:
@@ -136,7 +149,7 @@ class Session:
             if verdict.verdict not in {"correct", "incorrect"}:
                 verdict = Judgment("ungraded", verdict.explanation, verdict.method)
             self._record(user_id, text, verdict.verdict, verdict.explanation, verdict.method, judge)
-            self.state, self._deadline = "revealed", None
+            self._complete_attempt(user_id, verdict.verdict)
             return verdict
 
     async def timeout(self, round_id: int) -> bool:
@@ -151,6 +164,8 @@ class Session:
                 return False
             if self.state == "answering" and self.winner_id is not None:
                 self._record(self.winner_id, None, "timeout", "Answer time expired.")
+                self._complete_attempt(self.winner_id, "timeout")
+                return True
             self.state, self._deadline = "revealed", None
             return True
 
@@ -168,6 +183,7 @@ class Session:
             if self.state not in {"finished", "paused"}:
                 # An unfinished question is deliberately discarded; it remains absent from attempts.
                 self.current, self.winner_id, self._deadline = None, None, None
+                self.locked_out.clear()
                 self.state = "paused"
 
     async def resume(self) -> Question | None:
@@ -180,6 +196,7 @@ class Session:
     async def finish(self) -> None:
         async with self.lock:
             self.current, self.winner_id, self._deadline = None, None, None
+            self.locked_out.clear()
             self.state = "finished"
 
     def snapshot(self) -> dict[str, Any]:
@@ -196,6 +213,7 @@ class Session:
             "attempts": self.attempts,
             "round_id": self.round_id,
             "winner_id": self.winner_id,
+            "locked_out": sorted(self.locked_out),
         }
 
     @classmethod
