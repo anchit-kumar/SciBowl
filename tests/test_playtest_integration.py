@@ -1,5 +1,3 @@
-import json
-import sqlite3
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -84,25 +82,6 @@ async def test_answer_deadline_reopens_through_adapter_timer(bot):
     )
 
 
-async def test_question_snapshot_failure_pauses_before_delivery(bot):
-    session = Session(
-        "snapshot-failure",
-        1,
-        10,
-        "shared",
-        default_settings(),
-        [Question("q", "Question", "Answer", "Physics")],
-    )
-    bot.sessions[1] = session
-    bot.channels[1] = SimpleNamespace(id=1, send=AsyncMock())
-    bot.store.record_question = AsyncMock(side_effect=sqlite3.OperationalError("disk full"))
-    with pytest.raises(sqlite3.OperationalError):
-        await bot.advance(session)
-    assert session.state == "paused"
-    assert session.id not in bot.timers
-    bot.channels[1].send.assert_not_awaited()
-
-
 async def test_clear_scopes_messages_and_keeps_saved_results(bot):
     payload = {"id": "finished", "channel_id": 1, "starter_id": 10, "participants": [10]}
     await bot.store.finish_session("finished", payload, [])
@@ -141,29 +120,6 @@ async def test_clear_rejects_other_players_and_active_games(bot):
     await bot.clear_session_messages(owner)
     assert "Stop the active game" in owner.followup.send.await_args.args[0]
     assert len(await bot.store.session_messages("finished")) == 1
-
-
-async def test_reports_include_question_and_only_reporters_attempt(bot):
-    question = Question("q", "Complete question", "Official answer", "Biology").to_dict()
-    attempts = [
-        {"user_id": 10, "round_id": 1, "answer": "my typo", "question": question},
-        {"user_id": 20, "round_id": 1, "answer": "other private answer", "question": question},
-    ]
-    await bot.store.finish_session(
-        "report-session",
-        {"id": "report-session", "channel_id": 1, "starter_id": 10, "participants": [10, 20]},
-        attempts,
-    )
-    await bot.store.record_question("report-session", 1, question)
-    await bot.save_question_report(interaction(), "typo should count", 1, "judgment")
-    exported = bot.store.path.parent / "reports" / "report-session.json"
-    document = json.loads(exported.read_text(encoding="utf-8"))
-    report = document["reports"][0]
-    assert report["details"]["question"] == question
-    assert report["details"]["attempt"]["answer"] == "my typo"
-    assert "other private answer" not in exported.read_text(encoding="utf-8")
-    assert report["details"]["round_id"] == 1
-    assert "received_at" in report["details"]
 
 
 async def test_private_cleanup_expires_without_persisting_tokens(monkeypatch):

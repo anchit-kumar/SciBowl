@@ -12,7 +12,7 @@ from .models import CATEGORIES, validate_settings
 def help_embed() -> discord.Embed:
     return discord.Embed(
         title="Science Bowl commands",
-        description="```\n/game start        Set up a shared game\n/practice start    Set up private practice\n/game pause | resume | skip | stop\n/practice stop     End private practice\n/answer             Submit after buzzing\n/review             Open your saved review\n/report             Report the current question\n/clear              Clear latest session messages\n/settings           Set defaults and review DMs\n/score | /stats     View your results\n/sources | /status  Inspect the question bank\n/admin settings     Configure allowed channels\n```",
+        description="```\n/game start        Set up a shared game\n/practice start    Set up private practice\n/game pause | resume | skip | stop\n/practice stop     End private practice\n/answer             Submit after buzzing\n/review             Open your saved review\n/clear              Clear latest session messages\n/settings           Set defaults and review DMs\n/score | /stats     View your results\n/sources | /status  Inspect the question bank\n/admin settings     Configure allowed channels\n```",
         color=discord.Color.blurple(),
     ).set_footer(
         text="Setup choices apply only to this session. /settings changes future defaults."

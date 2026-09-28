@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import copy
 import logging
 import sqlite3
 import time
@@ -301,11 +300,6 @@ class BowlBot(discord.Client):
                 await self.finalize(session)
             return
         await self.persist(session)
-        try:
-            await self.store.record_question(session.id, session.round_id, question.to_dict())
-        except (sqlite3.Error, OSError):
-            await session.pause()
-            raise
         text = question.text
         if question.choices:
             text += "\n\n" + "\n".join(f"{key}) {value}" for key, value in question.choices.items())
@@ -775,63 +769,11 @@ class BowlBot(discord.Client):
             )
         await interaction.followup.send(
             f"Cleared {removed} session messages and {private_removed} of your recent private replies. "
-            f"{failed + private_failed} could not be removed. Saved scores, reviews, and reports are kept. "
+            f"{failed + private_failed} could not be removed. Saved scores and reviews are kept. "
             "Older private replies (or replies from before a restart) may need Dismiss message. "
             "Only messages tracked by this version can be cleared.",
             ephemeral=True,
         )
-
-    async def save_question_report(self, interaction, reason, question=None, kind="question"):
-        await interaction.response.defer(ephemeral=True)
-        session = self.sessions.get(interaction.channel_id)
-        payload = (
-            copy.deepcopy(session.snapshot())
-            if session
-            else await self.store.latest_channel_session(interaction.channel_id)
-        )
-        if not payload:
-            return await interaction.followup.send(
-                "No session found in this channel to report.", ephemeral=True
-            )
-        selected_round = question
-        if selected_round is None and session and session.current:
-            selected_round = session.round_id
-        record = await self.store.session_question(payload["id"], selected_round)
-        if not record:
-            return await interaction.followup.send(
-                "No recorded question found. Choose a question number from this session.",
-                ephemeral=True,
-            )
-        snapshot = record["question"]
-        attempt = next(
-            (
-                item
-                for item in reversed(payload.get("attempts", []))
-                if item["user_id"] == interaction.user.id and item["round_id"] == record["round_id"]
-            ),
-            None,
-        )
-        report_id = await self.store.report(
-            interaction.user.id,
-            payload["id"],
-            snapshot["id"],
-            reason,
-            details={
-                "kind": kind,
-                "channel_id": interaction.channel_id,
-                "guild_id": interaction.guild_id,
-                "round_id": record["round_id"],
-                "question": snapshot,
-                "attempt": attempt,
-            },
-        )
-        try:
-            await self.store.export_reports(payload["id"])
-            message = f"Report #{report_id} saved with question {record['round_id']} for session {payload['id']}."
-        except OSError:
-            message = f"Report #{report_id} is saved in the database. The local file export needs a retry."
-            log.warning("Report export failed for session %s", payload["id"])
-        await self.private_reply(interaction, payload["id"], message)
 
     async def maintenance(self):
         await self.wait_until_ready()
@@ -1098,23 +1040,6 @@ class BowlBot(discord.Client):
         )
         async def clear_command(interaction: discord.Interaction):
             await self.clear_session_messages(interaction)
-
-        @self.tree.command(
-            name="report", description="Report a question or judgment in this session"
-        )
-        @app_commands.choices(
-            kind=[
-                app_commands.Choice(name="Question issue", value="question"),
-                app_commands.Choice(name="Judgment issue", value="judgment"),
-            ]
-        )
-        async def report(
-            interaction: discord.Interaction,
-            reason: app_commands.Range[str, 1, 1000],
-            question: app_commands.Range[int, 1, 100] | None = None,
-            kind: str = "question",
-        ):
-            await self.save_question_report(interaction, reason, question, kind)
 
         @self.tree.command(name="stats", description="Your saved accuracy by mode and category")
         async def stats(interaction: discord.Interaction):

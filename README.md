@@ -29,11 +29,13 @@ Grant View Channel, Send Messages, Embed Links, Read Message History, Create Pri
 
 See the [complete command reference](docs/COMMANDS.md) for Discord commands, options, buttons, and terminal commands.
 
-The application command interface supports `/game start`, `/practice start`, `/settings`, `/score`, `/review`, `/stats`, `/sources`, `/report`, `/status`, and manager-only `/admin settings`. `/settings` stores a player’s default shared/solo filters and their DM-review opt-in. Explicit start options override the saved defaults.
+The application command interface supports `/game start`, `/practice start`, `/settings`, `/score`, `/review`, `/stats`, `/sources`, `/status`, and manager-only `/admin settings`. `/settings` stores a player’s default shared/solo filters and their DM-review opt-in. Explicit start options override the saved defaults.
 
 Start commands open private setup panels with multi-select categories, dropdown filters, and count/timer forms. Wrong shared answers or answer timeouts lock out that player for the question while others can buzz; the answer stays hidden until the question closes. `/help` displays the command list in an embed.
 
-`/clear` removes tracked bot messages from the latest finished session and the caller's recent tracked private replies, while retaining saved results. `/report` exports full question context and the reporter's own attempt to a separate JSON file per session in `data/reports/` (or `reports/` beside a custom database). Rebuild exports with `uv run scibowl reports export`.
+`/clear` removes tracked bot messages from the latest finished session and the caller's recent tracked private replies, while retaining saved results. Reporting has been removed; existing report files remain local.
+
+Ready for your main server? Follow the [production server setup](docs/PRODUCTION.md).
 
 The command-line interface is installed as `scibowl`:
 

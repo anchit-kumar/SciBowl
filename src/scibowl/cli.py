@@ -27,9 +27,6 @@ def parser():
     )
     commands = sub.add_parser("commands").add_subparsers(dest="action", required=True)
     commands.add_parser("sync", help="Register commands in DISCORD_GUILD_ID or globally")
-    reports = sub.add_parser("reports").add_subparsers(dest="action", required=True)
-    export = reports.add_parser("export", help="Rebuild local per-session report JSON files")
-    export.add_argument("--game", default=None, help="Export one session ID; omit for all")
     bank = sub.add_parser("bank").add_subparsers(dest="action", required=True)
     parse = bank.add_parser("parse")
     parse.add_argument("path", type=Path)
@@ -68,14 +65,6 @@ async def run(args):
             raise SystemExit(1)
         return
     db_path = Path(os.getenv("SCIBOWL_DB", "data/scibowl.sqlite3"))
-    if args.command == "reports":
-        store = await Store(db_path).open()
-        try:
-            paths = await store.export_reports(args.game)
-            print(f"Exported {len(paths)} session report files into {db_path.parent / 'reports'}.")
-        finally:
-            await store.close()
-        return
     if args.command in ("bot", "commands"):
         from .discord_app import BowlBot
 

@@ -4,7 +4,7 @@
 
 - Shared incorrect answers and answer timeouts reopen the same question for other players; the failed player is locked out of that question. Only one claim is active at a time. The configured `answer_seconds` remains authoritative (no hardcoded ten-second timeout). A correct answer, API failure, moderator skip, or expired open buzz window closes the question.
 - `/game start` and `/practice start` open a private setup panel initialized from explicit options, saved defaults, then built-ins. Categories use a multi-select; pool/format/source/role use selects; count/timers use a numeric modal. Starting is an explicit button action. Existing personal `/settings` remains available.
-- Reports retain question/attempt snapshots, reporter/session/channel identifiers and timestamps, with one ignored local JSON export per session. Clearing chat must not delete saved results or reports.
+- Reporting has been removed at the user's request. Legacy report data remains untouched. Clearing chat must not delete saved results.
 - `/clear` removes tracked bot messages from the latest session in the current channel, restricted to the starter or server manager. Active games must be stopped first. Tracked ephemeral responses may be removed only while their interaction webhook remains usable; Discord does not expose arbitrary private-message history for deletion.
 - Root owns Discord command/delivery integration and docs. Engine/judge worker owns engine/judging and their tests; setup worker owns a new setup UI module and tests; persistence worker owns storage and report/message persistence tests. Shared interface changes require coordination.
 
@@ -25,7 +25,7 @@ Python 3.12 / uv. Shared types live in `scibowl.models`.
 
 `save_session(session_id: str, payload: dict)` and `load_session(session_id) -> dict | None`; `unfinished_sessions() -> list[dict]`; `finish_session(session_id, payload, attempts: list[dict])` atomically saves final results; `review(user_id, session_id=None) -> dict | None` returns latest finished session containing participant; `mark_delivery(session_id, user_id, status)`; `delivery_status(session_id,user_id)`.
 
-Integration adds `save_preferences(user_id, profiles, dm_enabled)` to save the settings panel atomically; `allowed`, `set_channels`, `report`, `stats`, and `backup` support administration and operations. `Question.document_checksum` preserves packet provenance independently of its stable content ID. Mode settings are snapshotted at session creation. DM preferences are read at delivery.
+Integration adds `save_preferences(user_id, profiles, dm_enabled)` to save the settings panel atomically; `allowed`, `set_channels`, `stats`, and `backup` support administration and operations. `Question.document_checksum` preserves packet provenance independently of its stable content ID. Mode settings are snapshotted at session creation. DM preferences are read at delivery.
 
 ## Engine API
 
@@ -58,4 +58,4 @@ Reviewed staging remains editable: `load_approved` derives canonical content che
 
 Storage rejects database versions newer than the supported schema before changing schema metadata. Reads share the transaction lock with writes; cancellation rolls back incomplete writes. Once a session is finalized, repeated finalization cannot replace its historical payload or extend review access to new users.
 
-Storage also exposes `track_message`, `session_messages`, `forget_message`, `latest_channel_session`, `record_question`, `session_question`, and `export_reports`. `report(..., details=None)` returns a durable report ID. New additive v1 tables preserve message IDs, immutable per-round question snapshots, and report details. Report exports are derived files; SQLite remains authoritative. Interaction webhook tokens are held only in memory for short-lived cleanup and never persisted.
+Storage also exposes `track_message`, `session_messages`, `forget_message`, and `latest_channel_session`. The additive v1 message table preserves IDs for cleanup. Legacy reporting tables are no longer created or used; existing tables and files are left intact. Historical question snapshots for personal reviews remain in saved attempts. Interaction webhook tokens are held only in memory for short-lived cleanup and never persisted.

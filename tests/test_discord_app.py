@@ -62,11 +62,12 @@ async def test_command_tree_constructs_offline(tmp_path):
             "review",
             "score",
             "sources",
-            "report",
+            "clear",
             "stats",
             "status",
             "help",
         } <= set(commands)
+        assert "report" not in commands
         assert {command.name for command in commands["game"].commands} == {
             "start",
             "pause",

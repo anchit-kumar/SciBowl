@@ -47,12 +47,12 @@ The bot needs View Channels, Send Messages, Embed Links, Read Message History, C
 
 Notification delivery is best effort. A failed leaderboard send is not automatically retried; private saved reviews remain available. Review DMs require the bot to be running for navigation.
 
-## Help, reports, and cleanup
+## Help and cleanup
 
 1. Open `/help` and check the embedded command list. Check category autocomplete with `/game start category:Physics,Chemistry`; the panel should preserve both categories.
-2. Use `/report reason:Question text seems wrong kind:question` during a session, and `/report reason:Please review grading question:1 kind:judgment` after it ends. Confirm `data/reports/<session-id>.json` contains the full question, source/provenance, session/round IDs, reporter, timestamp, and only the reporter's matching attempt if any. A second session must have a separate file.
+2. After synchronizing commands, confirm `/report` no longer appears in the command menu or `/help`.
 3. Try `/clear` while a game is active; it must ask you to stop first. Finish the game, then clear as its starter. Only that session's tracked bot messages and your recent tracked private replies should disappear. User messages, another session's messages, and saved `/review` results must remain. Another ordinary member cannot clear the session.
 4. After restarting the bot, verify public cleanup still works for a session created with this version. Old private replies may require **Dismiss message** because their interaction tokens are not persisted. DMs and another person's private replies are not cleared.
-5. For a helium question, try a recognizable spelling error such as `Hei lmu`. Inspect the result; contextual typos should be accepted, while a different element or a different scientific term should be rejected. Use a judgment report for questionable decisions. These decisions still depend on Groq and question context.
+5. For a helium question, try a recognizable spelling error such as `Hei lmu`. Inspect the result; contextual typos should be accepted, while a different element or a different scientific term should be rejected. Share a screenshot for questionable decisions. These decisions still depend on Groq and question context.
 
 Record failures with the command, observed behavior, and approximate time. Share screenshots or sanitized logs without `.env` contents or tokens.

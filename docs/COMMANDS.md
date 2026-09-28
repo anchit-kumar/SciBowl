@@ -19,8 +19,7 @@ square brackets are optional; do not type the brackets.
 | `/review [game:<game_id>]` | Privately review your latest finished game, or a specific game you participated in. |
 | `/score` | Show the first page of the current session's leaderboard privately. |
 | `/sources` | List imported question sources, pools, and question counts. |
-| `/report reason:<description> [question:<number>] [kind:question\|judgment]` | Report the current/latest question or a specific round in this channel's latest session. Saves source/question details and your own attempt to a per-session local report file. |
-| `/clear` | Clear tracked bot messages from this channel's latest finished session, plus your recent tracked private replies. Starter or Manage Server required; stop active games first. Scores/reviews/reports and user messages are kept. |
+| `/clear` | Clear tracked bot messages from this channel's latest finished session, plus your recent tracked private replies. Starter or Manage Server required; stop active games first. Scores/reviews and user messages are kept. |
 | `/stats` | Show your saved accuracy by game mode and category. Skipped and ungraded attempts are excluded. |
 | `/status` | Show uptime, Discord connection latency, bank size, active sessions, and whether Groq is configured. |
 | `/help` | Show a short gameplay and controls guide. |
@@ -108,7 +107,6 @@ Run from the project directory. Credentials come from the ignored local `.env`.
 | `uv run scibowl bank import FILE` | Validate and import approved questions into SQLite, skipping duplicate IDs. |
 | `uv run scibowl db backup PATH` | Save a consistent SQLite backup to a new file. |
 | `uv run scibowl db restore PATH` | Restore a backup into a new, nonexistent `SCIBOWL_DB` path. Stop the bot and update `.env` first. |
-| `uv run scibowl reports export [--game SESSION_ID]` | Rebuild report JSON files from SQLite, for one session or all sessions. Files are placed beside the database in `reports/` (normally `data/reports/`). |
 
 `bank parse` requires `--source`. Optional flags:
 

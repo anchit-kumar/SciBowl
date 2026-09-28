@@ -3,10 +3,7 @@
 import asyncio
 import json
 import random
-import re
-import tempfile
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -58,21 +55,10 @@ class Store:
                 PRIMARY KEY(session_id,user_id));
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id INTEGER PRIMARY KEY, channel_ids TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-                session_id TEXT, question_id TEXT, reason TEXT NOT NULL);
-            -- Kept separate so databases created by schema v1 need no ALTER TABLE.
-            CREATE TABLE IF NOT EXISTS report_details (
-                report_id INTEGER PRIMARY KEY REFERENCES reports(id) ON DELETE CASCADE,
-                payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS session_messages (
                 session_id TEXT NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
                 PRIMARY KEY(session_id,message_id));
             CREATE INDEX IF NOT EXISTS session_messages_session ON session_messages(session_id);
-            CREATE TABLE IF NOT EXISTS session_questions (
-                session_id TEXT NOT NULL, round_id INTEGER NOT NULL, payload TEXT NOT NULL,
-                PRIMARY KEY(session_id,round_id));
-            CREATE INDEX IF NOT EXISTS session_questions_session ON session_questions(session_id,round_id);
             PRAGMA user_version=1;
         """)
         await self.db.commit()
@@ -286,58 +272,6 @@ class Store:
                 (guild_id, json.dumps(channels)),
             )
 
-    @staticmethod
-    def _report_snapshot(payload: dict | None, user_id, question_id) -> dict:
-        """Create the smallest durable report context from a session snapshot."""
-        if not payload:
-            return {}
-        attempts = payload.get("attempts", [])
-        question = None
-        attempt = None
-        for item in attempts:
-            candidate = item.get("question", {}) if isinstance(item, dict) else {}
-            if isinstance(candidate, dict) and candidate.get("id") == question_id:
-                question = candidate
-                if item.get("user_id") == user_id:
-                    attempt = item
-                    break
-        current = payload.get("current")
-        if question is None and isinstance(current, dict) and current.get("id") == question_id:
-            question = current
-        result = {}
-        if question is not None:
-            result["question"] = question
-        if attempt is not None:
-            result["attempt"] = attempt
-        channel_id = payload.get("channel_id")
-        if channel_id is not None:
-            result["channel_id"] = channel_id
-        return result
-
-    async def report(self, user_id, session_id, question_id, reason, *, details=None) -> int:
-        """Persist a report and its immutable, reporter-scoped context."""
-        async with self._transaction():
-            snapshot = dict(details or {})
-            if not snapshot and session_id:
-                async with self.db.execute(
-                    "SELECT payload FROM sessions WHERE id=?", (session_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-                snapshot = self._report_snapshot(
-                    json.loads(row[0]) if row else None, user_id, question_id
-                )
-            snapshot.setdefault("received_at", datetime.now(UTC).isoformat())
-            cursor = await self.db.execute(
-                "INSERT INTO reports(user_id,session_id,question_id,reason) VALUES (?,?,?,?)",
-                (user_id, session_id, question_id, reason),
-            )
-            report_id = cursor.lastrowid
-            await self.db.execute(
-                "INSERT INTO report_details(report_id,payload) VALUES (?,?)",
-                (report_id, json.dumps(snapshot)),
-            )
-            return report_id
-
     async def track_message(self, session_id, channel_id, message_id):
         async with self._transaction():
             await self.db.execute(
@@ -362,25 +296,6 @@ class Store:
                 (session_id, message_id),
             )
 
-    async def record_question(self, session_id, round_id, questiondict):
-        """Save the delivered question once, preserving report provenance after a session changes."""
-        async with self._transaction():
-            await self.db.execute(
-                "INSERT OR IGNORE INTO session_questions(session_id,round_id,payload) VALUES (?,?,?)",
-                (session_id, round_id, json.dumps(questiondict)),
-            )
-
-    async def session_question(self, session_id, round_id=None) -> dict | None:
-        query = "SELECT round_id,payload FROM session_questions WHERE session_id=?"
-        args = [session_id]
-        if round_id is not None:
-            query += " AND round_id=?"
-            args.append(round_id)
-        query += " ORDER BY round_id DESC LIMIT 1"
-        async with self.lock, self.db.execute(query, args) as cur:
-            row = await cur.fetchone()
-        return {"round_id": row[0], "question": json.loads(row[1])} if row else None
-
     async def latest_channel_session(self, channel_id):
         """Return the most recently changed session snapshot for a Discord channel."""
         async with (
@@ -392,68 +307,6 @@ class Store:
         ):
             row = await cur.fetchone()
         return json.loads(row[0]) if row else None
-
-    @staticmethod
-    def _report_filename(session_id) -> str:
-        value = str(session_id or "unscoped")
-        # Keep the session ID recognisable while guaranteeing a single safe filename component.
-        value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "unscoped"
-        return value[:120]
-
-    async def export_reports(self, session_id=None) -> list[Path]:
-        """Atomically rebuild the ignored JSON export for each requested report session."""
-        query = """SELECT r.id,r.user_id,r.session_id,r.question_id,r.reason,d.payload
-                   FROM reports r LEFT JOIN report_details d ON d.report_id=r.id"""
-        args = []
-        if session_id is not None:
-            query += " WHERE r.session_id=?"
-            args.append(session_id)
-        query += " ORDER BY r.session_id, r.id"
-        async with self.lock, self.db.execute(query, args) as cur:
-            rows = await cur.fetchall()
-
-        grouped = {}
-        for row in rows:
-            key = row[2]
-            grouped.setdefault(key, []).append(
-                {
-                    "id": row[0],
-                    "user_id": row[1],
-                    "session_id": key,
-                    "question_id": row[3],
-                    "reason": row[4],
-                    "details": json.loads(row[5]) if row[5] else {},
-                }
-            )
-
-        reports_dir = self.path.parent / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        reports_root = reports_dir.resolve()
-        exported = []
-        for key, reports in grouped.items():
-            filename = self._report_filename(key) + ".json"
-            target = (reports_dir / filename).resolve()
-            if target.parent != reports_root:
-                raise ValueError("Unsafe report export path.")
-            document = {"session_id": key, "reports": reports}
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=reports_root,
-                prefix=".report-",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary:
-                json.dump(document, temporary, indent=2, sort_keys=True)
-                temporary.write("\n")
-                temporary_path = Path(temporary.name)
-            try:
-                temporary_path.replace(target)
-            finally:
-                if temporary_path.exists():
-                    temporary_path.unlink()
-            exported.append(target)
-        return exported
 
     async def stats(self, user_id):
         async with (

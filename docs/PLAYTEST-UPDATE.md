@@ -1,5 +1,7 @@
 # Playtest feedback checkpoint
 
+Historical checkpoint: reporting was subsequently removed at the user's request. `/report` and `scibowl reports export` below describe the earlier version and are no longer available. See [production setup](PRODUCTION.md) for current rollout steps.
+
 ## Implemented
 
 - `/help` displays a formatted embed with commands and brief descriptions.

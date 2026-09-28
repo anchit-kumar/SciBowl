@@ -54,7 +54,6 @@ async def test_slow_delivery_gives_complete_question_full_buzz_window(bot):
     session = game()
     bot.sessions[1] = session
     bot.persist = AsyncMock()
-    bot.store.record_question = AsyncMock()
     now = [100.0]
 
     async def slow_send(**kwargs):
