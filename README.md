@@ -58,6 +58,8 @@ Imports create editable staging data; only explicitly reviewed records may enter
 
 ## Question bank and review gate
 
+The current local bank contains **2,700 questions** after the user-requested [Oly archive](https://oly.mehvix.com/) expansion: 1,448 tossups and 1,252 bonuses across six science subjects. Choose **Pool: All** in setup (or save it in `/settings`) to include the new invitational material; the regional pool has 109 questions. See the [import summary and verification](docs/OLY-IMPORT.md). Question data remains local and is not included in Git.
+
 Start with released materials from the [DOE high school resources](https://science.osti.gov/wdts/nsb/Regional-Competitions/Resources/HS-Sample-Questions), [MIT Science Bowl resources](https://www.mitsciencebowl.com/high-school/resources), and [Stanford Science Bowl past questions](https://scibowl.stanford.edu/past-questions). Treat [SciBowlDB](https://github.com/CQCumbers/scibowldb) as a supplementary source only after provenance is checked.
 
 The PDF tool extracts packets into staging JSON and records source URL, page, checksum, category, answer format, and tossup/bonus relationships. A reviewer must correct or explicitly approve each usable record before `bank import`; malformed answers, scans, formulas, diagrams, and unsupported layouts remain quarantined. Check each source’s terms before redistributing questions or a question-bank export.

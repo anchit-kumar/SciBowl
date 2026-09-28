@@ -4,6 +4,25 @@ The playable bank is local SQLite data. Packet PDFs and staging JSON stay outsid
 Git because they contain third-party question text. The committed importer never
 downloads packets while the bot is running.
 
+## Current bank: Oly archive expansion
+
+The local database now contains **2,700 questions**, including the original 79
+starter questions. Root imported 2,621 additional reviewed records from the
+user-requested [Oly archive](https://oly.mehvix.com/), after packet provenance,
+extraction-risk, validation, and deduplication checks. The review used automated
+source comparisons for retained records and sampled visual checks; it was not an
+exhaustive visual or factual review of every question.
+
+There are 1,448 tossups for shared play and 1,252 bonuses available in solo
+practice. The full bank has 1,002 multiple-choice and 1,698 short-answer questions.
+Select `pool:all` or Pool **All** in the setup panel to access all sources.
+Regional-only settings select the 109-question regional pool; most new packets
+are invitational. Saved personal defaults were not changed.
+
+See [the expansion summary](OLY-IMPORT.md) for subject/source counts, exclusions,
+local artifacts, backup, validation, and retrieval measurements. The historical
+starter-corpus notes below describe the earlier 79-question checkpoint.
+
 ## Starter corpus prepared at checkpoint 2
 
 `staging/starter-reviewed.json` is an ignored, reviewed staging artifact prepared

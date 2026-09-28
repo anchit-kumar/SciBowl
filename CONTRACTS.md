@@ -12,6 +12,10 @@
 
 Python 3.12 / uv. Shared types live in `scibowl.models`.
 
+## Oly corpus expansion ownership
+
+Root owns catalog/download orchestration, shared parser changes, integration, backup, deduplication, and final database import. Review workers own only their assigned ignored staging outputs and review notes; they do not modify the database, shared application code, or .env. Every accepted record must retain packet URL, checksum, page, category, and role. Uncertain extraction is excluded with reasons. Record the actual review method; automated source comparisons and sampled visual review must not be described as exhaustive visual review. PDFs, question text, and local review artifacts remain ignored.
+
 ## Ownership
 
 - Root owns models.py, storage.py, discord_app.py, cli.py and integration.
