@@ -1,0 +1,1 @@
+"""Science Bowl Discord bot."""

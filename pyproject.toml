@@ -1,0 +1,31 @@
+[project]
+name = "scibowl"
+version = "0.1.0"
+description = "Local-first Science Bowl practice for Discord"
+requires-python = ">=3.12"
+dependencies = [
+  "discord.py>=2.5,<3",
+  "aiosqlite>=0.20,<1",
+  "pdfplumber>=0.11,<1",
+  "groq>=0.20,<1",
+  "python-dotenv>=1,<2",
+]
+
+[project.scripts]
+scibowl = "scibowl.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".python", ".uv-cache", "downloads", "data", "staging"]

@@ -1,0 +1,19 @@
+[Unit]
+Description=Science Bowl Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scibowl
+WorkingDirectory=/opt/scibowl
+EnvironmentFile=/opt/scibowl/.env
+Environment=UV_CACHE_DIR=/var/cache/scibowl/uv
+ExecStart=/opt/scibowl/.venv/bin/scibowl bot
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

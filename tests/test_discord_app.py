@@ -1,0 +1,236 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import discord
+
+from scibowl.discord_app import BowlBot
+from scibowl.engine import Session
+from scibowl.models import Question, default_settings
+
+
+def payload(session_id="game-1", participants=(10,)):
+    return {
+        "id": session_id,
+        "participants": list(participants),
+        "attempts": [
+            {
+                "user_id": 10,
+                "verdict": "incorrect",
+                "answer": "wrong",
+                "explanation": "expected answer",
+                "question": {
+                    "category": "Physics",
+                    "source": "DOE",
+                    "page": 1,
+                    "text": "What is this?",
+                    "choices": {},
+                    "answer": "right",
+                },
+            }
+        ],
+    }
+
+
+def interaction(user_id=10, custom_id=None):
+    response = SimpleNamespace(
+        send_message=AsyncMock(),
+        edit_message=AsyncMock(),
+        is_done=MagicMock(return_value=False),
+        defer=AsyncMock(),
+    )
+    return SimpleNamespace(
+        user=SimpleNamespace(id=user_id),
+        response=response,
+        followup=SimpleNamespace(send=AsyncMock()),
+        data={"custom_id": custom_id} if custom_id else {},
+        channel_id=1,
+    )
+
+
+async def test_command_tree_constructs_offline(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        commands = {command.name: command for command in bot.tree.get_commands()}
+        assert {
+            "game",
+            "practice",
+            "admin",
+            "settings",
+            "answer",
+            "review",
+            "score",
+            "sources",
+            "report",
+            "stats",
+            "status",
+            "help",
+        } <= set(commands)
+        assert {command.name for command in commands["game"].commands} == {
+            "start",
+            "pause",
+            "resume",
+            "skip",
+            "stop",
+        }
+        assert {command.name for command in commands["practice"].commands} == {"start", "stop"}
+    finally:
+        await bot.close()
+
+
+async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        saved = default_settings("shared")
+        saved.update({"count": 7, "categories": ["Physics"], "pool": "all", "buzz_seconds": 20})
+        bot.store.get_settings = AsyncMock(return_value=saved)
+        bot.start_session = AsyncMock()
+        command = next(item for item in bot.tree.get_commands() if item.name == "game").get_command(
+            "start"
+        )
+        request = interaction()
+
+        await command.callback(
+            request,
+            count=11,
+            category="Chemistry",
+            pool=None,
+            source=None,
+            format=None,
+            buzz_seconds=None,
+            answer_seconds=40,
+        )
+
+        bot.start_session.assert_awaited_once()
+        _, mode, resolved = bot.start_session.await_args.args
+        assert mode == "shared"
+        assert resolved["count"] == 11
+        assert resolved["categories"] == ["Chemistry"]
+        assert resolved["pool"] == "all"
+        assert resolved["buzz_seconds"] == 20
+        assert resolved["answer_seconds"] == 40
+        assert resolved["role"] == "tossup"
+    finally:
+        await bot.close()
+
+
+async def test_review_owner_rejection_and_missing_review_are_ephemeral(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        other = interaction(user_id=99, custom_id="review:game-1:10:0:missed")
+        await bot.on_interaction(other)
+        other.response.send_message.assert_awaited_once_with(
+            "This review belongs to another player.", ephemeral=True
+        )
+
+        bot.store.review = AsyncMock(return_value=None)
+        owner = interaction(user_id=10)
+        await bot.show_review(owner, "game-1")
+        owner.response.send_message.assert_awaited_once_with(
+            "No saved review found for you.", ephemeral=True
+        )
+    finally:
+        await bot.close()
+
+
+async def test_review_dm_opt_out_skips_delivery_and_enabled_sends(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        stored = []
+
+        async def dm_enabled(user_id):
+            return user_id == 11
+
+        async def mark_delivery(session_id, user_id, status):
+            stored.append((session_id, user_id, status))
+
+        bot.store.dm_enabled = dm_enabled
+        bot.store.delivery_status = AsyncMock(return_value=None)
+        bot.store.mark_delivery = mark_delivery
+        user = SimpleNamespace(send=AsyncMock())
+        with patch.object(bot, "get_user", return_value=user):
+            await bot.deliver_reviews(payload(participants=(10, 11)))
+
+        assert ("game-1", 10, "opted_out") in stored
+        assert ("game-1", 11, "sent") in stored
+        user.send.assert_awaited_once()
+        assert user.send.await_args.kwargs["content"].startswith("Your Science Bowl review")
+    finally:
+        await bot.close()
+
+
+async def test_manual_finish_with_no_attempts_persists_and_posts_leaderboard(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        session = Session("empty-game", 1, 10, "solo", default_settings("solo"), [])
+        channel = SimpleNamespace(send=AsyncMock())
+        bot.sessions[session.channel_id] = session
+        bot.resolve_channel = AsyncMock(return_value=channel)
+        bot.store.finish_session = AsyncMock()
+
+        def consume(coroutine):
+            coroutine.close()
+
+        bot.spawn = consume
+        await bot.finalize(session, early=True)
+
+        bot.store.finish_session.assert_awaited_once()
+        saved = bot.store.finish_session.await_args.args[1]
+        assert saved["ended_early"] is True
+        assert saved["leaderboard"] == [
+            {
+                "user_id": 10,
+                "points": 0,
+                "correct": 0,
+                "incorrect": 0,
+                "timeout": 0,
+                "accuracy": None,
+                "rank": 1,
+            }
+        ]
+        channel.send.assert_awaited_once()
+        assert "<@10>" in channel.send.await_args.kwargs["embed"].description
+        assert "0 pts" in channel.send.await_args.kwargs["embed"].description
+        assert session.channel_id not in bot.sessions
+    finally:
+        await bot.close()
+
+
+async def test_solo_question_is_selected_for_the_starter_without_a_deadline():
+    session = Session(
+        "solo-1",
+        5,
+        10,
+        "solo",
+        default_settings("solo"),
+        [Question("q1", "question", "answer", "Physics")],
+    )
+
+    selected = await session.next_question()
+
+    assert selected.id == "q1"
+    assert session.state == "answering"
+    assert session.winner_id == 10
+    assert session._deadline is None
+
+
+async def test_unavailable_recovered_channel_keeps_session_paused(tmp_path):
+    bot = BowlBot(tmp_path / "bot.sqlite3")
+    try:
+        session = Session("recovered", 1, 10, "shared", default_settings("shared"), [])
+        await session.pause()
+        bot.sessions[session.channel_id] = session
+        response = MagicMock(status=404, reason="Not Found", headers={})
+        bot.resolve_channel = AsyncMock(side_effect=discord.NotFound(response, "missing"))
+        request = interaction(user_id=10)
+        request.guild = object()
+        request.permissions = SimpleNamespace(manage_guild=False)
+
+        await bot.control(request, "resume")
+
+        assert session.state == "paused"
+        request.followup.send.assert_awaited_once_with(
+            "The session channel is unavailable. Restore permissions before resuming.",
+            ephemeral=True,
+        )
+    finally:
+        await bot.close()

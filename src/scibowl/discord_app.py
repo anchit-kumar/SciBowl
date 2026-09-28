@@ -1,0 +1,832 @@
+"""Discord adapter. The engine owns scoring; this layer owns delivery and timers."""
+
+import asyncio
+import contextlib
+import logging
+import time
+import uuid
+from datetime import UTC, datetime
+
+import discord
+from discord import app_commands
+
+from .engine import Session
+from .judging import AnswerJudge
+from .models import CATEGORIES, validate_settings
+from .storage import Store
+from .ui import SettingsView, button, chunks, result_view, review_pages, review_view
+
+log = logging.getLogger(__name__)
+
+
+class AnswerModal(discord.ui.Modal, title="Your answer"):
+    answer = discord.ui.TextInput(label="Answer", max_length=1000)
+
+    def __init__(self, app, session, round_id):
+        super().__init__()
+        self.app, self.session, self.round_id = app, session, round_id
+
+    async def on_submit(self, interaction):
+        await self.app.submit_answer(interaction, self.session, self.round_id, self.answer.value)
+
+
+class QuestionView(discord.ui.View):
+    def __init__(self, app, session):
+        super().__init__(timeout=None)
+        self.app, self.session = app, session
+        self.round_id = session.round_id
+        if session.mode == "shared" and session.state == "open":
+            self.add_item(button("Buzz", self.buzz, style=discord.ButtonStyle.primary))
+        if session.state in ("answering", "open"):
+            self.add_item(button("Answer", self.answer, style=discord.ButtonStyle.success))
+        if session.mode == "solo":
+            if session.state == "answering":
+                self.add_item(button("Reveal", self.reveal))
+            if session.state == "revealed":
+                self.add_item(button("Next", self.next_question, style=discord.ButtonStyle.primary))
+            self.add_item(button("Stop", self.stop_game, style=discord.ButtonStyle.danger))
+
+    async def interaction_check(self, interaction):
+        session = self.session
+        valid = (
+            self.app.sessions.get(session.channel_id) is session
+            and session.round_id == self.round_id
+            and session.state not in ("paused", "finished")
+        )
+        if session.mode == "solo" and interaction.user.id != session.starter_id:
+            valid = False
+        if not valid:
+            await interaction.response.send_message(
+                "This control is no longer available to you.", ephemeral=True
+            )
+        else:
+            self.app.touch(session)
+        return valid
+
+    async def buzz(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        async with self.app.operation_lock(self.session):
+            if not await self.session.buzz(interaction.user.id, self.round_id):
+                return await interaction.followup.send(
+                    "Another player claimed this question, or its timer expired.", ephemeral=True
+                )
+            await self.app.persist(self.session)
+            await self.app.update_controls(self.session)
+            self.app.schedule_deadline(self.session)
+            await interaction.followup.send(
+                "You buzzed first. Press Answer or use /answer before time runs out.",
+                ephemeral=True,
+            )
+            await self.app.channel(self.session).send(
+                f"<@{interaction.user.id}> buzzed first.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+    async def answer(self, interaction):
+        if self.session.state != "answering" or self.session.winner_id != interaction.user.id:
+            return await interaction.response.send_message(
+                "Only the player who claimed this question can answer.", ephemeral=True
+            )
+        await interaction.response.send_modal(AnswerModal(self.app, self.session, self.round_id))
+
+    async def reveal(self, interaction):
+        await interaction.response.defer()
+        async with self.app.operation_lock(self.session):
+            if self.session.state != "answering":
+                return
+            await self.session.skip()
+            await self.app.reveal(self.session, "Skipped")
+
+    async def next_question(self, interaction):
+        await interaction.response.defer()
+        async with self.app.operation_lock(self.session):
+            if self.session.state == "revealed" and self.round_id == self.session.round_id:
+                await self.app.advance(self.session)
+
+    async def stop_game(self, interaction):
+        await interaction.response.defer()
+        async with self.app.operation_lock(self.session):
+            await self.app.finalize(self.session, early=True)
+
+
+class CategoryStartView(discord.ui.View):
+    def __init__(self, app, owner, settings):
+        super().__init__(timeout=300)
+        self.app, self.owner, self.settings = app, owner, dict(settings)
+        select = discord.ui.Select(
+            placeholder="Practice categories",
+            min_values=1,
+            max_values=len(CATEGORIES),
+            options=[
+                discord.SelectOption(label=c, value=c, default=c in settings["categories"])
+                for c in CATEGORIES
+            ],
+        )
+
+        async def choose(interaction):
+            self.settings["categories"] = list(select.values)
+            await interaction.response.edit_message(
+                content="Categories selected. Press Start practice.", view=self
+            )
+
+        select.callback = choose
+        self.add_item(select)
+
+        async def start(interaction):
+            await interaction.response.defer(ephemeral=True)
+            await self.app.start_session(interaction, "solo", self.settings)
+            self.stop()
+            await interaction.edit_original_response(view=None)
+
+        self.add_item(button("Start practice", start, style=discord.ButtonStyle.success))
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner:
+            await interaction.response.send_message(
+                "This setup belongs to another player.", ephemeral=True
+            )
+            return False
+        return True
+
+
+class BowlBot(discord.Client):
+    def __init__(
+        self, db_path, api_key=None, model="openai/gpt-oss-20b", guild_id=None, sync_only=False
+    ):
+        intents = discord.Intents.none()
+        intents.guilds = True
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
+        self.tree = app_commands.CommandTree(self)
+        self.store = Store(db_path)
+        self.judge = AnswerJudge(api_key, model)
+        self.guild_id = int(guild_id) if guild_id else None
+        self.sync_only = sync_only
+        self.sessions = {}
+        self.operations = {}
+        self.timers = {}
+        self.messages = {}
+        self.channels = {}
+        self.last_activity = {}
+        self.background = set()
+        self.start_lock = asyncio.Lock()
+        self.started = time.monotonic()
+        self.install_commands()
+
+    def spawn(self, coro):
+        task = asyncio.create_task(coro)
+        self.background.add(task)
+
+        def done(completed):
+            self.background.discard(completed)
+            if not completed.cancelled() and completed.exception():
+                log.error("Background task failed (%s)", type(completed.exception()).__name__)
+
+        task.add_done_callback(done)
+        return task
+
+    async def setup_hook(self):
+        await self.store.open()
+        if self.sync_only:
+            if self.guild_id:
+                guild = discord.Object(id=self.guild_id)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            return
+        for payload in await self.store.unfinished_sessions():
+            session = Session.restore(payload)
+            self.sessions[session.channel_id] = session
+            self.touch(session)
+        self.spawn(self.maintenance())
+
+    async def close(self):
+        for task in list(self.background):
+            task.cancel()
+        await asyncio.gather(*self.background, return_exceptions=True)
+        await self.judge.close()
+        await self.store.close()
+        await super().close()
+
+    def operation_lock(self, session):
+        return self.operations.setdefault(session.id, asyncio.Lock())
+
+    def channel(self, session):
+        channel = self.channels.get(session.channel_id) or self.get_channel(session.channel_id)
+        if channel is None:
+            raise ValueError("Session channel is unavailable. Check bot permissions.")
+        return channel
+
+    async def resolve_channel(self, session):
+        channel = self.channels.get(session.channel_id) or self.get_channel(session.channel_id)
+        if channel is None:
+            channel = await self.fetch_channel(session.channel_id)
+        self.channels[session.channel_id] = channel
+        return channel
+
+    def touch(self, session):
+        self.last_activity[session.id] = time.monotonic()
+
+    async def persist(self, session):
+        await self.store.save_session(session.id, session.snapshot())
+
+    def cancel_timer(self, session):
+        task = self.timers.pop(session.id, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+
+    def schedule_deadline(self, session):
+        self.cancel_timer(session)
+        if session.mode != "shared":
+            return
+        round_id = session.round_id
+        seconds = session.settings[
+            "answer_seconds" if session.state == "answering" else "buzz_seconds"
+        ]
+
+        async def timer():
+            await asyncio.sleep(seconds + 0.05)
+            async with self.operation_lock(session):
+                if await session.timeout(round_id):
+                    await self.reveal(session, "Time expired")
+
+        self.timers[session.id] = self.spawn(timer())
+
+    async def update_controls(self, session):
+        message = self.messages.get(session.id)
+        if message:
+            with contextlib.suppress(discord.NotFound):
+                await message.edit(
+                    view=QuestionView(self, session)
+                    if session.state not in ("paused", "finished")
+                    else None
+                )
+
+    async def advance(self, session, already_open=False):
+        self.cancel_timer(session)
+        question = session.current if already_open else await session.next_question()
+        if question is None:
+            if session.state == "finished":
+                await self.finalize(session)
+            return
+        await self.persist(session)
+        text = question.text
+        if question.choices:
+            text += "\n\n" + "\n".join(f"{key}) {value}" for key, value in question.choices.items())
+        parts = chunks(text)
+        for index, part in enumerate(parts):
+            embed = discord.Embed(
+                title=f"Question {session.round_id} · {question.category}", description=part
+            )
+            embed.set_footer(text=f"{question.format} · {question.source}"[:2048])
+            message = await self.channel(session).send(
+                embed=embed, view=QuestionView(self, session) if index == len(parts) - 1 else None
+            )
+        self.messages[session.id] = message
+        self.schedule_deadline(session)
+
+    async def reveal(self, session, label):
+        self.cancel_timer(session)
+        await self.persist(session)
+        await self.update_controls(session)
+        if session.current:
+            for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
+                await self.channel(session).send(
+                    embed=discord.Embed(title="Result", description=part)
+                )
+        if session.mode == "shared" and session.state == "revealed":
+            round_id = session.round_id
+
+            async def next_later():
+                await asyncio.sleep(5)
+                async with self.operation_lock(session):
+                    if session.state == "revealed" and session.round_id == round_id:
+                        await self.advance(session)
+
+            self.timers[session.id] = self.spawn(next_later())
+
+    async def submit_answer(self, interaction, session, round_id, text):
+        await interaction.response.defer(ephemeral=True)
+        async with self.operation_lock(session):
+            if (
+                session.state != "answering"
+                or session.winner_id != interaction.user.id
+                or session.round_id != round_id
+            ):
+                return await interaction.followup.send(
+                    "This answer control is no longer active for you.", ephemeral=True
+                )
+            self.touch(session)
+            result = await session.submit(interaction.user.id, round_id, text, self.judge)
+            if session.state == "revealed":
+                label = f"{result.verdict.title()}: {result.explanation}"
+                if result.verdict == "ungraded" and result.method != "state":
+                    label = (
+                        "Sorry, I couldn’t check that answer. This question won’t count. Moving on."
+                    )
+                await self.reveal(session, label)
+            await interaction.followup.send("Answer processed.", ephemeral=True)
+
+    async def finalize(self, session, early=False):
+        if self.sessions.get(session.channel_id) is not session:
+            return
+        self.cancel_timer(session)
+        await session.finish()
+        payload = dict(session.snapshot(), leaderboard=session.leaderboard(), ended_early=early)
+        await self.store.finish_session(session.id, payload, session.attempts)
+        self.sessions.pop(session.channel_id, None)
+        try:
+            await self.update_controls(session)
+            channel = await self.resolve_channel(session)
+            await self.post_leaderboard(channel, payload)
+        finally:
+            self.spawn(self.deliver_reviews(payload))
+            self.channels.pop(session.channel_id, None)
+            self.messages.pop(session.id, None)
+            self.last_activity.pop(session.id, None)
+
+    @staticmethod
+    def board_pages(payload):
+        rows = payload.get("leaderboard", [])
+        lines = []
+        for row in rows:
+            accuracy = "—" if row["accuracy"] is None else f"{row['accuracy']:.0%}"
+            lines.append(
+                f"**{row['rank']}.** <@{row['user_id']}> · **{row['points']} pts** · {row['correct']} correct / {row['incorrect']} incorrect / {row['timeout']} timed out · {accuracy}"
+            )
+        return ["\n".join(lines[i : i + 12]) for i in range(0, len(lines), 12)] or [
+            "No graded attempts."
+        ]
+
+    async def post_leaderboard(self, channel, payload):
+        pages = self.board_pages(payload)
+        view = self.leaderboard_view(payload["id"], 0, len(pages))
+        await channel.send(
+            embed=discord.Embed(
+                title="Leaderboard · "
+                + ("ended early" if payload.get("ended_early") else "finished"),
+                description=pages[0],
+            ).set_footer(text=f"Game {payload['id']} · 1/{len(pages)}"),
+            view=view,
+        )
+
+    @staticmethod
+    def leaderboard_view(session_id, page, total):
+        view = result_view(session_id)
+        if total > 1:
+            for label, target in [
+                ("Previous", max(0, page - 1)),
+                ("Next", min(total - 1, page + 1)),
+            ]:
+                view.add_item(
+                    discord.ui.Button(
+                        label=label,
+                        custom_id=f"board:{session_id}:{target}",
+                        disabled=target == page,
+                    )
+                )
+        return view
+
+    async def deliver_reviews(self, payload):
+        for owner in payload["participants"]:
+            if not await self.store.dm_enabled(owner):
+                await self.store.mark_delivery(payload["id"], owner, "opted_out")
+                continue
+            if await self.store.delivery_status(payload["id"], owner) in ("sent", "blocked"):
+                continue
+            try:
+                user = self.get_user(owner) or await self.fetch_user(owner)
+                pages = review_pages(payload, owner)
+                await user.send(
+                    content=f"Your Science Bowl review · game {payload['id']}\nUse /settings to turn review DMs off.",
+                    embed=pages[0],
+                    view=review_view(payload["id"], owner, 0, len(pages), "missed"),
+                )
+                await self.store.mark_delivery(payload["id"], owner, "sent")
+            except discord.Forbidden:
+                await self.store.mark_delivery(payload["id"], owner, "blocked")
+            except discord.HTTPException:
+                await self.store.mark_delivery(payload["id"], owner, "failed")
+            await asyncio.sleep(0.25)
+
+    async def show_review(self, interaction, session_id=None, page=0, kind="missed", edit=False):
+        payload = await self.store.review(interaction.user.id, session_id)
+        if not payload:
+            return await interaction.response.send_message(
+                "No saved review found for you.", ephemeral=True
+            )
+        pages = review_pages(payload, interaction.user.id, kind)
+        page = max(0, min(page, len(pages) - 1))
+        embed = pages[page].set_footer(text=f"Game {payload['id']} · page {page + 1}/{len(pages)}")
+        view = review_view(payload["id"], interaction.user.id, page, len(pages), kind)
+        if edit:
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    async def on_interaction(self, interaction):
+        # IDs contain no answer text. This dispatcher keeps reviews working after restart.
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        try:
+            if custom_id.startswith("reviewopen:"):
+                await self.show_review(interaction, custom_id.split(":")[1])
+            elif custom_id.startswith("review:"):
+                _, session_id, owner, page, kind, *_ = custom_id.split(":")
+                if int(owner) != interaction.user.id:
+                    return await interaction.response.send_message(
+                        "This review belongs to another player.", ephemeral=True
+                    )
+                if kind not in ("missed", "skipped", "ungraded"):
+                    return await interaction.response.send_message(
+                        "This control is invalid or expired.", ephemeral=True
+                    )
+                await self.show_review(interaction, session_id, int(page), kind, edit=True)
+            elif custom_id.startswith("board:"):
+                _, session_id, page = custom_id.split(":")
+                payload = await self.store.load_session(session_id)
+                # Only permit public boards in their original game channel.
+                if not payload or payload["channel_id"] != interaction.channel_id:
+                    return await interaction.response.send_message(
+                        "Leaderboard unavailable here.", ephemeral=True
+                    )
+                pages = self.board_pages(payload)
+                page = max(0, min(int(page), len(pages) - 1))
+                await interaction.response.edit_message(
+                    embed=discord.Embed(title="Leaderboard", description=pages[page]).set_footer(
+                        text=f"Game {session_id} · {page + 1}/{len(pages)}"
+                    ),
+                    view=self.leaderboard_view(session_id, page, len(pages)),
+                )
+        except (ValueError, KeyError):
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "This control is invalid or expired.", ephemeral=True
+                )
+
+    async def start_session(self, interaction, mode, settings):
+        async with self.start_lock:
+            validate_settings(settings)
+            if not interaction.guild or not isinstance(
+                interaction.channel, (discord.TextChannel, discord.Thread)
+            ):
+                return await interaction.followup.send(
+                    "Start games in a server text channel.", ephemeral=True
+                )
+            parent_id = (
+                interaction.channel.parent_id
+                if isinstance(interaction.channel, discord.Thread)
+                else interaction.channel_id
+            )
+            if not await self.store.allowed(interaction.guild_id, parent_id):
+                return await interaction.followup.send(
+                    "Games are not enabled in this channel.", ephemeral=True
+                )
+            if mode == "shared" and interaction.channel_id in self.sessions:
+                return await interaction.followup.send(
+                    "A session already exists here. Use /game resume or /game stop.", ephemeral=True
+                )
+            if mode == "solo" and any(
+                s.mode == "solo" and s.starter_id == interaction.user.id
+                for s in self.sessions.values()
+            ):
+                return await interaction.followup.send(
+                    "You already have a practice session. Finish it first.", ephemeral=True
+                )
+            questions = await self.store.questions(settings)
+            if not questions:
+                return await interaction.followup.send(
+                    "No questions match these settings. Import reviewed packets or edit /settings.",
+                    ephemeral=True,
+                )
+            channel = interaction.channel
+            if mode == "solo":
+                if not isinstance(channel, discord.TextChannel):
+                    return await interaction.followup.send(
+                        "Start private practice from a regular text channel.", ephemeral=True
+                    )
+                try:
+                    channel = await channel.create_thread(
+                        name=f"Practice · {interaction.user.display_name}"[:100],
+                        type=discord.ChannelType.private_thread,
+                        invitable=False,
+                    )
+                    await channel.add_user(interaction.user)
+                except discord.Forbidden:
+                    return await interaction.followup.send(
+                        "Private practice needs Create Private Threads and Send Messages in Threads permissions.",
+                        ephemeral=True,
+                    )
+            session = Session(
+                uuid.uuid4().hex[:16], channel.id, interaction.user.id, mode, settings, questions
+            )
+            self.channels[channel.id] = channel
+            self.sessions[channel.id] = session
+            self.touch(session)
+            await self.persist(session)
+            await interaction.followup.send(
+                f"Starting {len(questions)} questions in {channel.mention}.\nCategories: {', '.join(settings['categories'])}\nPool: {settings['pool']} · Source: {settings['source']} · Format: {settings['format']}",
+                ephemeral=True,
+            )
+            async with self.operation_lock(session):
+                await self.advance(session)
+
+    async def control(self, interaction, action, mode=None):
+        await interaction.response.defer(ephemeral=True)
+        session = self.sessions.get(interaction.channel_id)
+        if session is None and mode == "solo":
+            session = next(
+                (
+                    s
+                    for s in self.sessions.values()
+                    if s.mode == "solo" and s.starter_id == interaction.user.id
+                ),
+                None,
+            )
+        if not session or (mode and session.mode != mode):
+            return await interaction.followup.send("No matching active session.", ephemeral=True)
+        manager = interaction.guild and interaction.permissions.manage_guild
+        if interaction.user.id != session.starter_id and not manager:
+            return await interaction.followup.send(
+                "Only the starter or a server manager can do that.", ephemeral=True
+            )
+        async with self.operation_lock(session):
+            self.touch(session)
+            if action == "stop":
+                await self.finalize(session, early=True)
+            elif action == "pause":
+                self.cancel_timer(session)
+                await session.pause()
+                await self.persist(session)
+                await self.update_controls(session)
+            elif action == "resume":
+                if session.state != "paused":
+                    return await interaction.followup.send(
+                        "The session is not paused.", ephemeral=True
+                    )
+                try:
+                    await self.resolve_channel(session)
+                except discord.HTTPException:
+                    return await interaction.followup.send(
+                        "The session channel is unavailable. Restore permissions before resuming.",
+                        ephemeral=True,
+                    )
+                await session.resume()
+                await self.advance(session, already_open=True)
+            elif action == "skip":
+                if session.state not in ("open", "answering"):
+                    return await interaction.followup.send(
+                        "No open question to skip.", ephemeral=True
+                    )
+                await session.skip()
+                await self.reveal(session, "Skipped")
+        await interaction.followup.send(f"Session {action} processed.", ephemeral=True)
+
+    async def maintenance(self):
+        await self.wait_until_ready()
+        last_backup = None
+        while not self.is_closed():
+            today = datetime.now(UTC).date().isoformat()
+            if today != last_backup:
+                folder = self.store.path.parent / "backups"
+                await self.store.backup(folder / f"scibowl-{today}.sqlite3")
+                for old in sorted(folder.glob("scibowl-*.sqlite3"))[:-7]:
+                    old.unlink()
+                last_backup = today
+            for session in list(self.sessions.values()):
+                if time.monotonic() - self.last_activity.get(session.id, 0) > 1800:
+                    async with self.operation_lock(session):
+                        await self.finalize(session, early=True)
+            await asyncio.sleep(30)
+
+    def install_commands(self):
+        game = app_commands.Group(name="game", description="Shared Science Bowl games")
+        practice = app_commands.Group(name="practice", description="Private solo practice")
+        admin = app_commands.Group(
+            name="admin",
+            description="Server administration",
+            default_permissions=discord.Permissions(manage_guild=True),
+        )
+
+        async def options(user_id, mode, **overrides):
+            value = await self.store.get_settings(user_id, mode)
+            for key, item in overrides.items():
+                if item is not None:
+                    value[key] = item
+            if mode == "shared":
+                value["role"] = "tossup"
+            validate_settings(value)
+            return value
+
+        @game.command(name="start", description="Start automatic play using your personal defaults")
+        async def game_start(
+            interaction: discord.Interaction,
+            count: app_commands.Range[int, 1, 100] | None = None,
+            category: str | None = None,
+            pool: str | None = None,
+            source: str | None = None,
+            format: str | None = None,
+            buzz_seconds: app_commands.Range[int, 5, 120] | None = None,
+            answer_seconds: app_commands.Range[int, 5, 120] | None = None,
+        ):
+            await interaction.response.defer(ephemeral=True)
+            cats = list(CATEGORIES) if category == "all" else [category] if category else None
+            settings = await options(
+                interaction.user.id,
+                "shared",
+                count=count,
+                categories=cats,
+                pool=pool,
+                source=source,
+                format=format,
+                buzz_seconds=buzz_seconds,
+                answer_seconds=answer_seconds,
+            )
+            await self.start_session(interaction, "shared", settings)
+
+        @practice.command(name="start", description="Choose categories for private practice")
+        async def practice_start(
+            interaction: discord.Interaction,
+            count: app_commands.Range[int, 1, 100] | None = None,
+            pool: str | None = None,
+            source: str | None = None,
+            format: str | None = None,
+            role: str | None = None,
+        ):
+            settings = await options(
+                interaction.user.id,
+                "solo",
+                count=count,
+                pool=pool,
+                source=source,
+                format=format,
+                role=role,
+            )
+            await interaction.response.send_message(
+                "Choose categories, then Start practice.",
+                view=CategoryStartView(self, interaction.user.id, settings),
+                ephemeral=True,
+            )
+
+        @game.command(name="pause", description="Pause your session")
+        async def pause(interaction: discord.Interaction):
+            await self.control(interaction, "pause")
+
+        @game.command(name="resume", description="Resume with a fresh question")
+        async def resume(interaction: discord.Interaction):
+            await self.control(interaction, "resume")
+
+        @game.command(name="skip", description="Skip the open question")
+        async def skip(interaction: discord.Interaction):
+            await self.control(interaction, "skip")
+
+        @game.command(name="stop", description="End your session and save results")
+        async def stop(interaction: discord.Interaction):
+            await self.control(interaction, "stop")
+
+        @practice.command(name="stop", description="End your private practice")
+        async def practice_stop(interaction: discord.Interaction):
+            await self.control(interaction, "stop", "solo")
+
+        @self.tree.command(
+            name="settings", description="Personal game defaults and DM review preference"
+        )
+        async def settings_command(interaction: discord.Interaction):
+            profiles = {
+                mode: await self.store.get_settings(interaction.user.id, mode)
+                for mode in ("shared", "solo")
+            }
+            view = SettingsView(
+                self.store,
+                interaction.user.id,
+                profiles,
+                await self.store.dm_enabled(interaction.user.id),
+            )
+            await interaction.response.send_message(view.summary(), view=view, ephemeral=True)
+
+        @admin.command(
+            name="settings",
+            description="Allow games in this channel only, or reset to all channels",
+        )
+        @app_commands.checks.has_permissions(manage_guild=True)
+        async def admin_settings(
+            interaction: discord.Interaction,
+            channel: discord.TextChannel | None = None,
+            allow_all: bool = False,
+        ):
+            if not interaction.guild:
+                return await interaction.response.send_message(
+                    "Use this in a server.", ephemeral=True
+                )
+            if channel is None and not allow_all:
+                return await interaction.response.send_message(
+                    "Choose a channel, or set allow_all:true.", ephemeral=True
+                )
+            await self.store.set_channels(interaction.guild_id, [] if allow_all else [channel.id])
+            await interaction.response.send_message(
+                "Allowed game channels updated.", ephemeral=True
+            )
+
+        @self.tree.command(name="answer", description="Submit your answer after buzzing")
+        async def answer_command(
+            interaction: discord.Interaction, text: app_commands.Range[str, 1, 1000]
+        ):
+            session = self.sessions.get(interaction.channel_id)
+            if not session:
+                return await interaction.response.send_message(
+                    "No active game here.", ephemeral=True
+                )
+            await self.submit_answer(interaction, session, session.round_id, text)
+
+        @self.tree.command(
+            name="review", description="Privately review your latest game or a game ID"
+        )
+        async def review_command(interaction: discord.Interaction, game: str | None = None):
+            await self.show_review(interaction, game)
+
+        @self.tree.command(name="score", description="Current session leaderboard")
+        async def score(interaction: discord.Interaction):
+            session = self.sessions.get(interaction.channel_id)
+            if not session:
+                return await interaction.response.send_message("No active session.", ephemeral=True)
+            pages = self.board_pages({"leaderboard": session.leaderboard()})
+            await interaction.response.send_message(pages[0], ephemeral=True)
+
+        @self.tree.command(name="sources", description="Locally imported sources")
+        async def sources(interaction: discord.Interaction):
+            items = await self.store.sources()
+            text = (
+                "\n".join(f"{s['source']} · {s['pool']} · {s['count']} questions" for s in items)
+                or "No sources imported yet."
+            )
+            await interaction.response.send_message(text[:1900], ephemeral=True)
+
+        @self.tree.command(name="report", description="Flag the current question or judgment")
+        async def report(
+            interaction: discord.Interaction, reason: app_commands.Range[str, 1, 1000]
+        ):
+            session = self.sessions.get(interaction.channel_id)
+            if not session or not session.current:
+                return await interaction.response.send_message(
+                    "No current question to report.", ephemeral=True
+                )
+            await self.store.report(interaction.user.id, session.id, session.current.id, reason)
+            await interaction.response.send_message(
+                "Report saved for local review.", ephemeral=True
+            )
+
+        @self.tree.command(name="stats", description="Your saved accuracy by mode and category")
+        async def stats(interaction: discord.Interaction):
+            sessions = await self.store.stats(interaction.user.id)
+            buckets = {}
+            for payload in sessions:
+                for attempt in payload.get("attempts", []):
+                    if attempt["user_id"] != interaction.user.id or attempt["verdict"] not in (
+                        "correct",
+                        "incorrect",
+                        "timeout",
+                    ):
+                        continue
+                    key = (payload["mode"], attempt["question"]["category"])
+                    bucket = buckets.setdefault(key, [0, 0])
+                    bucket[0] += attempt["verdict"] == "correct"
+                    bucket[1] += 1
+            text = "\n".join(
+                f"{mode} · {category}: {good}/{total} ({good / total:.0%})"
+                for (mode, category), (good, total) in sorted(buckets.items())
+            )
+            await interaction.response.send_message(
+                text or "No graded attempts yet.", ephemeral=True
+            )
+
+        @self.tree.command(name="status", description="Bot and question bank health")
+        async def status(interaction: discord.Interaction):
+            sources = await self.store.sources()
+            await interaction.response.send_message(
+                f"Uptime: {int(time.monotonic() - self.started)}s\nDiscord: {self.latency * 1000:.0f}ms\nQuestions: {sum(s['count'] for s in sources)}\nActive sessions: {len(self.sessions)}\nGroq: {'configured' if self.judge._client else 'not configured'}",
+                ephemeral=True,
+            )
+
+        @self.tree.command(name="help", description="Science Bowl controls")
+        async def help_command(interaction: discord.Interaction):
+            await interaction.response.send_message(
+                "Start /game start for shared play or /practice start for private study. Buzz first, then Answer. Correct answers earn 4 points; mistakes do not subtract points. /settings controls personal defaults and review DMs. Every finished session saves a leaderboard and /review. Starter or managers can /game pause, resume, skip, or stop.",
+                ephemeral=True,
+            )
+
+        self.tree.add_command(game)
+        self.tree.add_command(practice)
+        self.tree.add_command(admin)
+
+        @self.tree.error
+        async def on_error(interaction, error):
+            original = getattr(error, "original", error)
+            message = (
+                str(original)
+                if isinstance(original, (ValueError, app_commands.CheckFailure))
+                else "Sorry, that action failed. Check bot permissions and try again."
+            )
+            log.warning("Command failed (%s)", type(original).__name__)
+            if interaction.response.is_done():
+                await interaction.followup.send(message[:1800], ephemeral=True)
+            else:
+                await interaction.response.send_message(message[:1800], ephemeral=True)
