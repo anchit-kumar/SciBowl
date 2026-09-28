@@ -50,6 +50,18 @@ async def test_numeric_modal_redraw_keeps_start_control_current():
     assert app.start_session.await_args.args[2]["count"] == 9
 
 
+async def test_hide_delay_modal_accepts_fractional_seconds():
+    app = SimpleNamespace(start_session=AsyncMock(return_value=True))
+    view = GameSetupView(app, 1, "shared", default_settings(), [])
+    modal = NumericSetupModal(view, "hide_seconds")
+    modal.value_input._value = "0.75"
+    await modal.on_submit(request())
+    assert view.settings["hide_seconds"] == 0.75
+    assert "**Hide after buzz:** 0.75s" in view.embed().description
+    await view._start(request())
+    assert app.start_session.await_args.args[2]["hide_seconds"] == 0.75
+
+
 async def test_modal_rejects_wrong_owner_and_starting_panel_cannot_mutate():
     view = GameSetupView(SimpleNamespace(), 1, "shared", default_settings(), [])
     modal = NumericSetupModal(view, "count")

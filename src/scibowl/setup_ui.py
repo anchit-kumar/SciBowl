@@ -25,11 +25,14 @@ class NumericSetupModal(discord.ui.Modal):
             "count": "Question count (1-100)",
             "buzz_seconds": "Buzz time (5-120)",
             "answer_seconds": "Answer time (5-120)",
+            "hide_seconds": "Hide after buzz (0-10 seconds)",
         }[field]
         super().__init__(title=label)
         self.view, self.field = view, field
         self.value_input = discord.ui.TextInput(
-            label=label, default=str(view.settings[field]), max_length=3
+            label=label,
+            default=str(view.settings[field]),
+            max_length=24 if field == "hide_seconds" else 3,
         )
         self.add_item(self.value_input)
 
@@ -45,13 +48,18 @@ class NumericSetupModal(discord.ui.Modal):
             )
             return
         try:
-            value = int(self.value_input.value.strip())
+            value = (
+                float(self.value_input.value.strip())
+                if self.field == "hide_seconds"
+                else int(self.value_input.value.strip())
+            )
             candidate = dict(self.view.settings)
             candidate[self.field] = value
             validate_settings(candidate)
         except (TypeError, ValueError):
             await interaction.response.send_message(
-                "Use 1-100 questions or 5-120 seconds for a timer.", ephemeral=True
+                "Use 1-100 questions, 5-120 seconds for timers, or 0-10 seconds to hide.",
+                ephemeral=True,
             )
             return
         self.view.settings[self.field] = value
@@ -87,6 +95,7 @@ class GameSetupView(discord.ui.View):
         )
         text += (
             f"**Buzz:** {self.settings['buzz_seconds']}s | **Answer:** {self.settings['answer_seconds']}s"
+            f" | **Hide after buzz:** {self.settings.get('hide_seconds', 0.5):g}s"
             if self.mode == "shared"
             else "**Timing:** Untimed private practice"
         )
@@ -159,6 +168,10 @@ class GameSetupView(discord.ui.View):
                 button = discord.ui.Button(label=labels[name], row=3)
                 button.callback = self._guard(generation, self._numeric_callback(name))
                 self.add_item(button)
+        if self.mode == "shared":
+            hide = discord.ui.Button(label="Hide after buzz", row=4)
+            hide.callback = self._guard(generation, self._numeric_callback("hide_seconds"))
+            self.add_item(hide)
         start = discord.ui.Button(
             label="Start game" if self.mode == "shared" else "Start practice",
             style=discord.ButtonStyle.success,

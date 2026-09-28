@@ -88,13 +88,18 @@ class SettingsNumbers(discord.ui.Modal, title="Counts and timers"):
         self.parent = parent
         self.profile = parent.mode
         self.fields = {}
-        for name, label in [
+        fields = [
             ("count", "Question count (1–100)"),
             ("buzz_seconds", "Buzz seconds (5–120)"),
             ("answer_seconds", "Answer seconds (5–120)"),
-        ]:
+        ]
+        if self.profile == "shared":
+            fields.append(("hide_seconds", "Hide after buzz (0–10 seconds)"))
+        for name, label in fields:
             field = discord.ui.TextInput(
-                label=label, default=str(parent.drafts[self.profile][name]), max_length=3
+                label=label,
+                default=str(parent.drafts[self.profile][name]),
+                max_length=24 if name == "hide_seconds" else 3,
             )
             self.fields[name] = field
             self.add_item(field)
@@ -106,7 +111,12 @@ class SettingsNumbers(discord.ui.Modal, title="Counts and timers"):
             )
         draft = dict(self.parent.drafts[self.profile])
         try:
-            draft.update({key: int(field.value) for key, field in self.fields.items()})
+            draft.update(
+                {
+                    key: float(field.value) if key == "hide_seconds" else int(field.value)
+                    for key, field in self.fields.items()
+                }
+            )
             validate_settings(draft)
         except ValueError as exc:
             return await interaction.response.send_message(str(exc), ephemeral=True)
@@ -161,11 +171,17 @@ class SettingsView(discord.ui.View):
 
     def summary(self):
         value = self.drafts[self.mode]
+        timing = (
+            f"Buzz: {value['buzz_seconds']}s · Answer: {value['answer_seconds']}s · "
+            f"Hide after buzz: {value.get('hide_seconds', 0.5):g}s"
+            if self.mode == "shared"
+            else "Private practice is untimed."
+        )
         return (
             f"**Personal settings · {self.mode}** (unsaved until Save)\n"
             f"{value['count']} questions · {value['pool']} · {value['format']} · {value['role']}\n"
             f"Categories: {', '.join(value['categories'])}\nSource: {value['source']}\n"
-            f"Buzz: {value['buzz_seconds']}s · Answer: {value['answer_seconds']}s (shared only)\n"
+            f"{timing}\n"
             f"DM reviews: **{'On' if self.dm else 'Off'}**"
         )
 

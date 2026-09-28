@@ -55,7 +55,7 @@ async def game(tmp_path, monkeypatch):
     original_sleep = asyncio.sleep
 
     async def sleep(seconds):
-        if seconds == 2:
+        if seconds == session.settings.get("hide_seconds", 0.5):
             sleep_started.set()
             await release.wait()
         else:
@@ -82,7 +82,7 @@ async def buzz_and_hide(game):
     return original, interaction
 
 
-async def test_deletes_all_chunks_after_two_seconds_and_keeps_private_answer(game):
+async def test_deletes_all_chunks_after_default_half_second_and_keeps_private_answer(game):
     bot, session, _, _ = game
     original, interaction = await buzz_and_hide(game)
     assert len(original) > 1
@@ -91,11 +91,21 @@ async def test_deletes_all_chunks_after_two_seconds_and_keeps_private_answer(gam
     assert session.id not in bot.messages
     ack = interaction.followup.send.await_args
     assert ack.kwargs["ephemeral"] is True
+    assert "0.5 seconds" in ack.args[0]
     view = ack.kwargs["view"]
     assert [item.label for item in view.children] == ["Answer"]
     answer = request()
     await view.answer(answer)
     answer.response.send_modal.assert_awaited_once()
+
+
+@pytest.mark.parametrize("delay", [0, 1.25])
+async def test_custom_hide_delay_is_used_without_waiting_for_real_time(game, delay):
+    _, session, _, _ = game
+    session.settings["hide_seconds"] = delay
+    original, interaction = await buzz_and_hide(game)
+    assert all(message.delete.await_count == 1 for message in original)
+    assert f"{delay:g} seconds" in interaction.followup.send.await_args.args[0]
 
 
 @pytest.mark.parametrize("verdict", ["correct", "incorrect", "ungraded"])

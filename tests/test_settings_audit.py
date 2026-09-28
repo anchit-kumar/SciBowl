@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from scibowl.models import default_settings
+from scibowl.models import default_settings, validate_settings
 from scibowl.ui import SettingsNumbers, SettingsSource, SettingsView
 
 
@@ -57,3 +57,21 @@ async def test_finished_settings_modals_are_rejected(modal_type):
     await modal.on_submit(event)
 
     event.response.send_message.assert_awaited_once()
+
+
+async def test_shared_settings_modal_saves_fractional_hide_delay():
+    view, _ = settings_view()
+    modal = SettingsNumbers(view)
+    assert "hide_seconds" in modal.fields
+    modal.fields["hide_seconds"]._value = "0.75"
+    await modal.on_submit(interaction())
+    assert view.drafts["shared"]["hide_seconds"] == 0.75
+    assert "Hide after buzz: 0.75s" in view.summary()
+    view.mode = "solo"
+    assert "hide_seconds" not in SettingsNumbers(view).fields
+
+
+@pytest.mark.parametrize("delay", [-0.1, 10.1, float("nan"), float("inf"), True, "0.5"])
+def test_invalid_hide_delay_is_rejected(delay):
+    with pytest.raises(ValueError, match="hide delay"):
+        validate_settings(dict(default_settings(), hide_seconds=delay))

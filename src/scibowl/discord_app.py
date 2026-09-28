@@ -86,7 +86,8 @@ class QuestionView(discord.ui.View):
             await self.app.private_reply(
                 interaction,
                 self.session.id,
-                "You buzzed first. The question disappears for everyone in 2 seconds. "
+                "You buzzed first. The question disappears for everyone in "
+                f"{self.session.settings.get('hide_seconds', 0.5):g} seconds. "
                 "Press Answer or use /answer before time runs out.",
                 view=self.app.answer_view(self.session),
             )
@@ -239,7 +240,7 @@ class BowlBot(discord.Client):
         round_id, owner = session.round_id, session.winner_id
 
         async def hide():
-            await asyncio.sleep(2)
+            await asyncio.sleep(session.settings.get("hide_seconds", 0.5))
             if (
                 self.sessions.get(session.channel_id) is not session
                 or session.round_id != round_id
@@ -959,7 +960,8 @@ class BowlBot(discord.Client):
             ],
         )
         @app_commands.describe(
-            category="Comma-separated categories, or choose multiple in the setup panel"
+            category="Comma-separated categories, or choose multiple in the setup panel",
+            hide_seconds="Seconds before hiding the question after a buzz (0–10; default 0.5)",
         )
         async def game_start(
             interaction: discord.Interaction,
@@ -970,6 +972,7 @@ class BowlBot(discord.Client):
             format: str | None = None,
             buzz_seconds: app_commands.Range[int, 5, 120] | None = None,
             answer_seconds: app_commands.Range[int, 5, 120] | None = None,
+            hide_seconds: app_commands.Range[float, 0.0, 10.0] | None = None,
         ):
             await interaction.response.defer(ephemeral=True)
             names = {item.casefold(): item for item in CATEGORIES}
@@ -995,6 +998,7 @@ class BowlBot(discord.Client):
                 format=format,
                 buzz_seconds=buzz_seconds,
                 answer_seconds=answer_seconds,
+                hide_seconds=hide_seconds,
             )
             view = GameSetupView(
                 self, interaction.user.id, "shared", settings, await self.store.sources()

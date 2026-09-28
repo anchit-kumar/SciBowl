@@ -1,5 +1,6 @@
 """Shared contracts. External text is data, never executable instructions."""
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -58,6 +59,7 @@ def default_settings(mode: str = "shared") -> dict[str, Any]:
         "role": "tossup",
         "buzz_seconds": 30,
         "answer_seconds": 15,
+        "hide_seconds": 0.5,
     }
 
 
@@ -76,3 +78,11 @@ def validate_settings(value: dict[str, Any]) -> None:
     for key in ("buzz_seconds", "answer_seconds"):
         if not isinstance(value.get(key), int) or not 5 <= value[key] <= 120:
             raise ValueError("Timers must be between 5 and 120 seconds.")
+    hide_seconds = value.get("hide_seconds", 0.5)
+    if (
+        isinstance(hide_seconds, bool)
+        or not isinstance(hide_seconds, (int, float))
+        or not math.isfinite(hide_seconds)
+        or not 0 <= hide_seconds <= 10
+    ):
+        raise ValueError("Question hide delay must be between 0 and 10 seconds.")

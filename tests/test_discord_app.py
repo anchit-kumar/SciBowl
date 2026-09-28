@@ -84,7 +84,15 @@ async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
     bot = BowlBot(tmp_path / "bot.sqlite3")
     try:
         saved = default_settings("shared")
-        saved.update({"count": 7, "categories": ["Physics"], "pool": "all", "buzz_seconds": 20})
+        saved.update(
+            {
+                "count": 7,
+                "categories": ["Physics"],
+                "pool": "all",
+                "buzz_seconds": 20,
+                "hide_seconds": 1.5,
+            }
+        )
         bot.store.get_settings = AsyncMock(return_value=saved)
         bot.store.sources = AsyncMock(return_value=[])
         bot.start_session = AsyncMock()
@@ -102,6 +110,7 @@ async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
             format=None,
             buzz_seconds=None,
             answer_seconds=40,
+            hide_seconds=0.75,
         )
 
         bot.start_session.assert_not_awaited()
@@ -113,6 +122,7 @@ async def test_game_start_uses_explicit_values_over_personal_defaults(tmp_path):
         assert resolved["pool"] == "all"
         assert resolved["buzz_seconds"] == 20
         assert resolved["answer_seconds"] == 40
+        assert resolved["hide_seconds"] == 0.75
         assert resolved["role"] == "tossup"
     finally:
         await bot.close()

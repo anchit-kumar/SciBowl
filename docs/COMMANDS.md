@@ -44,6 +44,7 @@ built-in defaults. A shared game uses only its starter's settings.
 | `format` | Both start commands | `short_answer`, `multiple_choice`, or `all`. |
 | `buzz_seconds` | `/game start` | 5–120 seconds to buzz; built-in default 30. |
 | `answer_seconds` | `/game start` | 5–120 seconds to answer after buzzing; built-in default 15. |
+| `hide_seconds` | `/game start` | 0–10 seconds before hiding the public question after a buzz; fractional values allowed, default 0.5. Zero starts deletion immediately. |
 | `role` | `/practice start` | `tossup`, `bonus`, or `all`. Built-in default `tossup`. Shared games always use tossups. |
 
 Categories: `Biology`, `Chemistry`, `Earth and Space Science`, `Energy`,
@@ -69,7 +70,7 @@ Examples:
 
 | Control | Description |
 | --- | --- |
-| Buzz | Claim the current shared question; only the first valid buzz succeeds. The public question disappears two seconds later. |
+| Buzz | Claim the current shared question; only the first valid buzz succeeds. The public question disappears after the configured delay (default 0.5 seconds). |
 | Answer | Open the answer-entry form. The buzzer receives a private button that remains usable after the public question disappears. `/answer` also works. |
 | Reveal / Next / Stop | Solo controls to reveal an unanswered question, advance, or finish. |
 | My Review | Open your private saved review from the final leaderboard. |
@@ -85,12 +86,13 @@ hidden during retries. API failures are
 ungraded and do not lower accuracy. Disabled or blocked DMs still leave private
 access through `/review`. Review buttons require the bot to be online.
 
-The public question text and choices are deleted two seconds after a successful
-buzz, then reposted after judging or an answer timeout. Incorrect answers and
+The public question text and choices are deleted after `hide_seconds` following a successful
+buzz (default 0.5 seconds), then reposted after judging or an answer timeout. Incorrect answers and
 answer timeouts reset the full `buzz_seconds` window after the question is restored.
 Correct answers reveal the result and advance normally. If judging finishes before
-two seconds, the pending deletion is canceled. The two-second delay is fixed;
-the existing buzz and answer timers remain configurable. Solo questions stay visible.
+the configured delay expires, pending deletion is canceled. Change the delay with
+**Hide after buzz** in game setup, or `/settings` → Shared → Numbers → Save.
+Saved changes apply to future games. Solo questions stay visible.
 
 `/clear` can remove only messages tracked by this version. Ephemeral replies older
 than the interaction-token lifetime (15 minutes), or from before a bot restart,

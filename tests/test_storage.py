@@ -50,12 +50,17 @@ async def test_settings_defaults_validation_and_user_isolation(store: Store):
     assert defaults == default_settings("shared")
 
     chosen = default_settings("shared")
-    chosen.update({"count": 12, "categories": ["Physics"], "pool": "all"})
+    chosen.update({"count": 12, "categories": ["Physics"], "pool": "all", "hide_seconds": 1.25})
     await store.save_settings(100, "shared", chosen)
 
     assert await store.get_settings(100, "shared") == chosen
     assert await store.get_settings(101, "shared") == default_settings("shared")
     assert await store.get_settings(100, "solo") == default_settings("solo")
+
+    legacy = default_settings("shared")
+    del legacy["hide_seconds"]
+    await store.save_settings(102, "shared", legacy)
+    assert (await store.get_settings(102, "shared"))["hide_seconds"] == 0.5
 
     invalid = dict(chosen, categories=["Astronomy"])
     with pytest.raises(ValueError, match="valid category"):
