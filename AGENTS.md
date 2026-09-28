@@ -22,7 +22,7 @@
 - Personal gameplay changes affect future sessions; check each player's current DM preference when sending results. Other participants' defaults must not change a shared game.
 - Reserve /admin settings for server-manager controls such as allowed channels.
 - Start commands open a private setup panel with multi-select categories, dropdown filters, numeric fields, and an explicit Start button. Keep personal /settings separate.
-- Reporting is removed at the user's request. Preserve legacy report files and database rows without exposing reporting commands or collecting new reports. /clear removes tracked bot messages for a finished session without deleting results or user messages; recent private replies are removable only while Discord interaction tokens remain usable.
+- Reporting is removed at the user's request. Preserve legacy report files and database rows without exposing reporting commands or collecting new reports. /clear removes tracked bot messages for a finished shared session; in a finished solo practice thread, it deletes the thread and its messages. Saved results remain. Recent private replies are removable only while Discord interaction tokens remain usable.
 
 ## Development workflow
 

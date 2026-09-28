@@ -2,6 +2,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 
 from scibowl.discord_app import BowlBot
@@ -120,6 +121,56 @@ async def test_clear_rejects_other_players_and_active_games(bot):
     await bot.clear_session_messages(owner)
     assert "Stop the active game" in owner.followup.send.await_args.args[0]
     assert len(await bot.store.session_messages("finished")) == 1
+
+
+async def test_clear_deletes_finished_practice_thread_and_preserves_results(bot):
+    payload = {
+        "id": "practice",
+        "channel_id": 1,
+        "starter_id": 10,
+        "mode": "solo",
+        "participants": [10],
+    }
+    await bot.store.finish_session("practice", payload, [])
+    await bot.store.track_message("practice", 1, 101)
+    await bot.store.track_message("other", 1, 202)
+    request = interaction()
+    request.channel = MagicMock(spec=discord.Thread)
+    request.channel.type = discord.ChannelType.private_thread
+    request.channel.delete = AsyncMock()
+
+    await bot.clear_session_messages(request)
+
+    request.channel.delete.assert_awaited_once()
+    request.channel.get_partial_message.assert_not_called()
+    assert await bot.store.session_messages("practice") == []
+    assert len(await bot.store.session_messages("other")) == 1
+    assert await bot.store.review(10, "practice") is not None
+
+
+async def test_clear_practice_thread_falls_back_when_delete_forbidden(bot):
+    payload = {
+        "id": "practice",
+        "channel_id": 1,
+        "starter_id": 10,
+        "mode": "solo",
+        "participants": [10],
+    }
+    await bot.store.finish_session("practice", payload, [])
+    await bot.store.track_message("practice", 1, 101)
+    request = interaction()
+    request.channel = MagicMock(spec=discord.Thread)
+    request.channel.type = discord.ChannelType.private_thread
+    request.channel.delete = AsyncMock(
+        side_effect=discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "denied")
+    )
+    request.channel.get_partial_message.return_value.delete = AsyncMock()
+
+    await bot.clear_session_messages(request)
+
+    request.channel.get_partial_message.assert_called_once_with(101)
+    assert await bot.store.session_messages("practice") == []
+    assert "Manage Threads" in request.followup.send.await_args.args[0]
 
 
 async def test_private_cleanup_expires_without_persisting_tokens(monkeypatch):

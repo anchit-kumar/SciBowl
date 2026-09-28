@@ -872,10 +872,37 @@ class BowlBot(discord.Client):
                 return await interaction.followup.send(
                     "Only the session starter or a server manager can clear it.", ephemeral=True
                 )
+            entries = [
+                entry
+                for entry in await self.store.session_messages(payload["id"])
+                if entry["channel_id"] == interaction.channel_id
+            ]
+            practice_thread = (
+                payload.get("mode") == "solo"
+                and isinstance(interaction.channel, discord.Thread)
+                and interaction.channel.type == discord.ChannelType.private_thread
+            )
+            thread_delete_error = ""
+            if practice_thread:
+                await interaction.followup.send(
+                    "Deleting this practice thread. Saved scores and reviews remain available.",
+                    ephemeral=True,
+                )
+                try:
+                    await interaction.channel.delete(reason="Practice session cleared")
+                except discord.NotFound:
+                    pass
+                except discord.Forbidden:
+                    thread_delete_error = "Could not delete the practice thread. Give the bot Manage Threads permission. "
+                except discord.HTTPException:
+                    thread_delete_error = "Discord could not delete the practice thread. "
+                if not thread_delete_error:
+                    for entry in entries:
+                        await self.store.forget_message(payload["id"], entry["message_id"])
+                    await self.private_messages.clear(payload["id"], interaction.user.id)
+                    return
             removed, failed = 0, 0
-            for entry in await self.store.session_messages(payload["id"]):
-                if entry["channel_id"] != interaction.channel_id:
-                    continue
+            for entry in entries:
                 try:
                     await interaction.channel.get_partial_message(entry["message_id"]).delete()
                     removed += 1
@@ -889,7 +916,8 @@ class BowlBot(discord.Client):
                 payload["id"], interaction.user.id
             )
         await interaction.followup.send(
-            f"Cleared {removed} session messages and {private_removed} of your recent private replies. "
+            thread_delete_error
+            + f"Cleared {removed} session messages and {private_removed} of your recent private replies. "
             f"{failed + private_failed} could not be removed. Saved scores and reviews are kept. "
             "Older private replies (or replies from before a restart) may need Dismiss message. "
             "Only messages tracked by this version can be cleared.",

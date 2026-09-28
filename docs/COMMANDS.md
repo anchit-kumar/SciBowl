@@ -19,7 +19,7 @@ square brackets are optional; do not type the brackets.
 | `/review [game:<game_id>]` | Privately review your latest finished game, or a specific game you participated in. |
 | `/score` | Show the first page of the current session's leaderboard privately. |
 | `/sources` | List imported question sources, pools, and question counts. |
-| `/clear` | Clear tracked bot messages from this channel's latest finished session, plus your recent tracked private replies. Starter or Manage Server required; stop active games first. Scores/reviews and user messages are kept. |
+| `/clear` | In a finished solo practice thread, delete the thread and all its messages. In a shared channel, clear tracked bot messages from its latest finished session. Also clear your recent tracked private replies. Starter or Manage Server required; stop active sessions first. Scores and reviews remain. |
 | `/stats` | Show your saved accuracy by game mode and category. Skipped and ungraded attempts are excluded. |
 | `/status` | Show uptime, Discord connection latency, bank size, active sessions, and whether Groq is configured. |
 | `/help` | Show a short gameplay and controls guide. |
@@ -94,7 +94,11 @@ the configured delay expires, pending deletion is canceled. Change the delay wit
 **Hide after buzz** in game setup, or `/settings` → Shared → Numbers → Save.
 Saved changes apply to future games. Solo questions stay visible.
 
-`/clear` can remove only messages tracked by this version. Ephemeral replies older
+In a finished solo practice thread, `/clear` deletes the entire thread, including
+messages sent by users. The bot needs **Manage Threads** permission. If Discord
+denies thread deletion, `/clear` clears tracked bot messages and tells you why.
+In shared channels, `/clear` can remove only messages tracked by this version.
+Ephemeral replies older
 than the interaction-token lifetime (15 minutes), or from before a bot restart,
 may need Discord's **Dismiss message**. Clearing removes only the caller's tracked
 private replies, not another player's reviews or DMs.
