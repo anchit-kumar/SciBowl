@@ -52,7 +52,7 @@ def default_settings(mode: str = "shared") -> dict[str, Any]:
     return {
         "count": 20,
         "categories": list(CATEGORIES),
-        "pool": "regional",
+        "pool": "all",
         "source": "all",
         "format": "all",
         "role": "tossup",

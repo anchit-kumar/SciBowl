@@ -17,7 +17,9 @@ There are 1,448 tossups for shared play and 1,252 bonuses available in solo
 practice. The full bank has 1,002 multiple-choice and 1,698 short-answer questions.
 Select `pool:all` or Pool **All** in the setup panel to access all sources.
 Regional-only settings select the 109-question regional pool; most new packets
-are invitational. Saved personal defaults were not changed.
+are invitational. After the import, the user requested Pool All for everyone:
+it is now the built-in default, and existing local shared/solo profiles were
+updated once. Players can subsequently save a different pool if desired.
 
 See [the expansion summary](OLY-IMPORT.md) for subject/source counts, exclusions,
 local artifacts, backup, validation, and retrieval measurements. The historical

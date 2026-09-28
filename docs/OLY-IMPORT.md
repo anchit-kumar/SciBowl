@@ -47,8 +47,10 @@ each question retains its exact packet reference.
 /practice start pool:all role:all count:20
 ```
 
-Review the setup panel and press Start. Alternatively, save Pool **All** in your
-shared and/or solo `/settings` profile. Existing player defaults remain unchanged.
+Review the setup panel and press Start. Following the import, Pool **All** became
+the built-in shared/solo default at the user's request, and existing local
+profiles were updated once. Other preferences and active games were preserved.
+Players can still choose a different pool in `/settings` or for an individual game.
 Shared games use tossups; solo practice can include bonuses. The regional pool
 has 109 questions and the invitational pool has 2,591. New sessions read SQLite
 directly, so this data import does not require a bot restart. Already-created

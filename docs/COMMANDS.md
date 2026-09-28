@@ -39,7 +39,7 @@ built-in defaults. A shared game uses only its starter's settings.
 | --- | --- | --- |
 | `count` | `/game start`, `/practice start` | 1–100 questions; built-in default 20. Uses fewer if not enough match. |
 | `category` | `/game start` | Comma-separated categories with autocomplete, or `all`. The setup panel also provides a category multi-select. |
-| `pool` | Both start commands | `regional`, `invitational`, or `all`. Built-in default `regional`. |
+| `pool` | Both start commands | `regional`, `invitational`, or `all`. Built-in default `all`. |
 | `source` | Both start commands | Exact source name from `/sources`, or `all`. |
 | `format` | Both start commands | `short_answer`, `multiple_choice`, or `all`. |
 | `buzz_seconds` | `/game start` | 5–120 seconds to buzz; built-in default 30. |

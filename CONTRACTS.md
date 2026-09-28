@@ -29,6 +29,8 @@ Root owns catalog/download orchestration, shared parser changes, integration, ba
 
 `get_settings(user_id: int, mode: str) -> dict` returns full defaults merged with stored settings; `save_settings(user_id, mode, settings)` validates and replaces profile; `dm_enabled(user_id) -> bool`; `set_dm(user_id, enabled)`.
 
+The built-in shared/solo pool is `all`. Existing local shared/solo profiles were updated once to `all` at the user's request; later explicit pool choices remain supported. Other preferences, DM settings, and session snapshots are unaffected by that update.
+
 `save_session(session_id: str, payload: dict)` and `load_session(session_id) -> dict | None`; `unfinished_sessions() -> list[dict]`; `finish_session(session_id, payload, attempts: list[dict])` atomically saves final results; `review(user_id, session_id=None) -> dict | None` returns latest finished session containing participant; `mark_delivery(session_id, user_id, status)`; `delivery_status(session_id,user_id)`.
 
 Integration adds `save_preferences(user_id, profiles, dm_enabled)` to save the settings panel atomically; `allowed`, `set_channels`, `stats`, and `backup` support administration and operations. `Question.document_checksum` preserves packet provenance independently of its stable content ID. Mode settings are snapshotted at session creation. DM preferences are read at delivery.

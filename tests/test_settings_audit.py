@@ -31,7 +31,7 @@ async def test_rebuilt_settings_selector_cannot_write_to_new_field():
     event = interaction()
     await old_editor.callback(event)
 
-    assert view.drafts["solo"]["pool"] == "regional"
+    assert view.drafts["solo"]["pool"] == "all"
     event.response.send_message.assert_awaited_once()
 
 
