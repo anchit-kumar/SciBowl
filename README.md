@@ -27,6 +27,8 @@ Grant View Channel, Send Messages, Embed Links, Read Message History, Create Pri
 
 ## Commands
 
+See the [complete command reference](docs/COMMANDS.md) for Discord commands, options, buttons, and terminal commands.
+
 The application command interface supports `/game start`, `/practice start`, `/settings`, `/score`, `/review`, `/stats`, `/sources`, `/report`, `/status`, and manager-only `/admin settings`. `/settings` stores a player’s default shared/solo filters and their DM-review opt-in. Explicit start options override the saved defaults.
 
 The command-line interface is installed as `scibowl`:
@@ -81,6 +83,10 @@ The running bot backs up daily into the database directory's `backups` folder an
 Review controls work while the bot is running, including after a restart. Discord or a process crash can interrupt notification delivery; saved private reviews remain accessible through `/review`. See [checkpoint status](docs/CHECKPOINT-2.md) for remaining live-validation work and the [transcribed agent workflow](docs/WORKFLOW.md).
 
 ## Development checks
+
+On Windows, `verify_quietly.pyw` runs offline lint, formatting checks, and tests without console windows when opened with Python's windowless launcher. Results go to ignored `logs/verification.txt` and `logs/verification.json`. It does not install dependencies or connect external services.
+
+See the [independent audit](docs/AUDIT.md) for confirmed findings, fixes, and the current validation limits.
 
 ```powershell
 $env:UV_CACHE_DIR = "$PWD/.uv-cache"

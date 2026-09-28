@@ -1,3 +1,5 @@
+import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -108,3 +110,46 @@ async def test_unfinished_session_and_backup(store: Store, tmp_path: Path):
         assert await restored.load_session("live-1") == {"id": "live-1", "participants": [7]}
     finally:
         await restored.close()
+
+
+async def test_open_rejects_a_newer_schema_without_changing_it(tmp_path: Path):
+    database = tmp_path / "future.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA user_version=2")
+
+    with pytest.raises(ValueError, match="newer"):
+        await Store(database).open()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+async def test_finalized_session_is_immutable_and_review_access_does_not_expand(store: Store):
+    first = {"id": "finished-immutable", "participants": [11], "state": "finished"}
+    second = {"id": "finished-immutable", "participants": [22], "state": "finished"}
+    await store.finish_session("finished-immutable", first, [{"answer": "first"}])
+    await store.finish_session("finished-immutable", second, [{"answer": "second"}])
+
+    assert (await store.review(11, "finished-immutable"))["attempts"] == [{"answer": "first"}]
+    assert await store.review(22, "finished-immutable") is None
+
+
+async def test_cancelled_preferences_write_is_rolled_back(store: Store, monkeypatch):
+    profile = default_settings("solo")
+    started = asyncio.Event()
+    original_commit = store.db.commit
+
+    async def interrupted_commit():
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(store.db, "commit", interrupted_commit)
+    task = asyncio.create_task(store.save_preferences(99, {"solo": profile}, dm_enabled=False))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    monkeypatch.setattr(store.db, "commit", original_commit)
+    assert await store.get_settings(99, "solo") == default_settings("solo")
+    assert await store.dm_enabled(99) is True

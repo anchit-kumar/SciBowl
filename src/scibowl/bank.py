@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ _FORMAT = {
     "short answer": "short_answer",
     "short-answer": "short_answer",
 }
+_QUESTION_FIELDS = {field.name for field in fields(Question)}
 
 
 def _normal(value: str) -> str:
@@ -51,6 +53,28 @@ def _sha(value: str | bytes) -> str:
     if isinstance(value, str):
         value = value.encode("utf-8")
     return hashlib.sha256(value).hexdigest()
+
+
+def _content_checksum(role: str, text: str, answer: str, choices: dict[str, str]) -> str:
+    """Return the identity checksum for the question content used in play."""
+    material = "|".join(
+        (
+            role,
+            _normal(text),
+            _normal(answer),
+            *(f"{key}:{_normal(value)}" for key, value in sorted(choices.items())),
+        )
+    )
+    return _sha(material)
+
+
+def _canonical_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Refresh derived identity fields after a reviewer has corrected a record."""
+    value = dict(record)
+    checksum = _content_checksum(value["role"], value["text"], value["answer"], value["choices"])
+    value["checksum"] = checksum
+    value["id"] = f"q_{checksum[:24]}"
+    return value
 
 
 def _source_kind(source: str) -> str:
@@ -204,15 +228,7 @@ def _block_question(
     if not text or not answer or not category:
         return None, issues
 
-    material = "|".join(
-        (
-            role,
-            _normal(text),
-            _normal(answer),
-            *(f"{key}:{_normal(value)}" for key, value in sorted(choices.items())),
-        )
-    )
-    question_checksum = _sha(material)
+    question_checksum = _content_checksum(role, text, answer, choices)
     return (
         {
             "id": f"q_{question_checksum[:24]}",
@@ -340,7 +356,11 @@ def validate_staging(payload: dict) -> list[str]:
         errors.append("staging contains no questions")
     if payload.get("issues") and payload.get("issues_acknowledged") is not True:
         errors.append("staging issues have not been explicitly acknowledged")
-    if metadata.get("pool") not in {"regional", "invitational", "all"}:
+    if not isinstance(metadata.get("pool"), str) or metadata["pool"] not in {
+        "regional",
+        "invitational",
+        "all",
+    }:
         errors.append("staging metadata has an invalid pool")
     if not isinstance(metadata.get("source"), str) or not metadata["source"].strip():
         errors.append("staging metadata needs a source")
@@ -373,13 +393,22 @@ def validate_staging(payload: dict) -> list[str]:
             errors.append(f"{prefix} has no text")
         if not isinstance(record["answer"], str) or not record["answer"].strip():
             errors.append(f"{prefix} has no answer")
-        if record["category"] not in CATEGORIES:
+        if not isinstance(record["category"], str) or record["category"] not in CATEGORIES:
             errors.append(f"{prefix} has an invalid category")
-        if record["format"] not in {"short_answer", "multiple_choice"}:
+        if not isinstance(record["format"], str) or record["format"] not in {
+            "short_answer",
+            "multiple_choice",
+        }:
             errors.append(f"{prefix} has an invalid format")
-        if record["pool"] not in {"regional", "invitational", "all"}:
+        if not isinstance(record["pool"], str) or record["pool"] not in {
+            "regional",
+            "invitational",
+            "all",
+        }:
             errors.append(f"{prefix} has an invalid pool")
-        if record["role"] not in {"tossup", "bonus"}:
+        if not isinstance(record["source"], str) or not record["source"].strip():
+            errors.append(f"{prefix} has an invalid source")
+        if not isinstance(record["role"], str) or record["role"] not in {"tossup", "bonus"}:
             errors.append(f"{prefix} has an invalid role")
         if not isinstance(record["page"], int) or record["page"] < 1:
             errors.append(f"{prefix} has an invalid page")
@@ -393,14 +422,29 @@ def validate_staging(payload: dict) -> list[str]:
             errors.append(f"{prefix} has malformed multiple-choice options")
         if not isinstance(record["id"], str):
             errors.append(f"{prefix} has an invalid id")
-            continue
+        if not isinstance(record["checksum"], str):
+            errors.append(f"{prefix} has an invalid checksum")
+        if not isinstance(record["document_checksum"], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", record["document_checksum"]
+        ):
+            errors.append(f"{prefix} has an invalid document checksum")
         if not isinstance(record.get("aliases", []), list) or any(
             not isinstance(alias, str) for alias in record.get("aliases", [])
         ):
             errors.append(f"{prefix} has invalid aliases")
-        if record["id"] in seen:
-            errors.append(f"{prefix} duplicates stable id {record['id']}")
-        seen.add(record["id"])
+        if (
+            isinstance(record["text"], str)
+            and isinstance(record["answer"], str)
+            and isinstance(record["role"], str)
+            and isinstance(choices, dict)
+            and all(
+                isinstance(key, str) and isinstance(value, str) for key, value in choices.items()
+            )
+        ):
+            canonical_id = f"q_{_content_checksum(record['role'], record['text'], record['answer'], choices)[:24]}"
+            if canonical_id in seen:
+                errors.append(f"{prefix} duplicates stable content id {canonical_id}")
+            seen.add(canonical_id)
     return errors
 
 
@@ -410,6 +454,12 @@ def load_approved(payload: dict) -> list[Question]:
     if errors:
         raise ValueError("staging cannot be imported: " + "; ".join(errors))
     return [
-        Question.from_dict({key: value for key, value in record.items() if key != "reviewed"})
+        Question.from_dict(
+            {
+                key: value
+                for key, value in _canonical_record(record).items()
+                if key in _QUESTION_FIELDS
+            }
+        )
         for record in payload["questions"]
     ]

@@ -37,6 +37,15 @@ class Session:
     def _expired(self) -> bool:
         return self._deadline is not None and time.monotonic() >= self._deadline
 
+    def remaining_seconds(self) -> float | None:
+        return max(0.0, self._deadline - time.monotonic()) if self._deadline is not None else None
+
+    async def refresh_deadline(self, round_id: int) -> None:
+        """Give players the full buzz window once the complete question is delivered."""
+        async with self.lock:
+            if self.mode == "shared" and self.state == "open" and self.round_id == round_id:
+                self._deadline = time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+
     async def next_question(self) -> Question | None:
         async with self.lock:
             if self.state in {"finished", "paused", "answering", "judging"}:

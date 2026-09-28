@@ -17,7 +17,11 @@ _ELEMENTS = (
     "Zn|Zr"
 )
 _FORMULA = re.compile(rf"^(?:(?:{_ELEMENTS})\d*)+(?:[+-]\d*)?$")
-_CHOICE = re.compile(r"^\s*([A-Z])\s*[\).:]\s*(.+)$", re.IGNORECASE)
+_CHOICE = re.compile(r"^\s*\(?([A-Z])\)?\s*[\).:]\s*(.+)$", re.IGNORECASE)
+_ACCEPT_ANNOTATION = re.compile(
+    r"^(?P<primary>.+?)\s*\(\s*ACCEPT\s*:\s*(?P<aliases>[^()]+)\s*\)\s*$",
+    re.IGNORECASE,
+)
 _UNIT_SYMBOLS = (
     "m|s|A|K|mol|cd|Hz|N|Pa|J|W|C|V|F|Ω|Ohm|S|Wb|T|H|lm|lx|Bq|Gy|Sv|kat|L|eV|Da|g|rad|sr"
 )
@@ -63,6 +67,19 @@ def _has_scientific_case(value: str) -> bool:
     return False
 
 
+def _accepted_candidates(answer: str) -> list[str]:
+    """Expand only explicit terminal ACCEPT annotations from official answers."""
+    match = _ACCEPT_ANNOTATION.fullmatch(answer)
+    if not match:
+        return [answer]
+    aliases = re.split(r"\s+OR\s+", match.group("aliases"), flags=re.IGNORECASE)
+    return [
+        answer,
+        match.group("primary").strip(),
+        *(alias.strip() for alias in aliases if alias.strip()),
+    ]
+
+
 class AnswerJudge:
     """Judge deterministic answers first, then use a narrowly scoped Groq request."""
 
@@ -70,7 +87,7 @@ class AnswerJudge:
         self.model = model
         self._client: Any | None = None
         self._cooldown_until = 0.0
-        self.policy_version = "v2"
+        self.policy_version = "v3"
         if api_key:
             # Import lazily so local-only installs and tests do not need network setup.
             from groq import AsyncGroq
@@ -79,7 +96,11 @@ class AnswerJudge:
 
     @staticmethod
     def _local(question: Question, submitted: str) -> Judgment | None:
-        accepted = [question.answer, *question.aliases]
+        accepted = [
+            candidate
+            for answer in [question.answer, *question.aliases]
+            for candidate in _accepted_candidates(answer)
+        ]
         if question.format == "multiple_choice":
             expected_letters = AnswerJudge._choice_letters(accepted)
             for letter, choice in question.choices.items():

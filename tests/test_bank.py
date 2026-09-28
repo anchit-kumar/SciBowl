@@ -183,3 +183,64 @@ ANSWER: W)Amillimeter
     assert "missing whitespace" in joined
     assert "unexpected non-footer content after ANSWER" in joined
     assert "lost superscript" in joined
+
+
+def test_reviewed_edits_refresh_content_identity_before_import(tmp_path: Path):
+    packet = tmp_path / "identity.pdf"
+    packet.write_bytes(b"identity")
+    text = """TOSS-UP
+BIOLOGY
+Short Answer
+What molecule carries hereditary information?
+ANSWER: DNA
+"""
+    with patch("scibowl.bank.pdfplumber.open", return_value=_Pdf([text])):
+        payload = parse_pdfs(packet, "DOE", "regional")
+
+    record = payload["questions"][0]
+    original_id = record["id"]
+    record["reviewed"] = True
+    record["answer"] = "RNA"
+    assert validate_staging(payload) == []
+
+    question = load_approved(payload)[0]
+    assert question.id != original_id
+    assert question.id == f"q_{question.checksum[:24]}"
+    assert question.checksum != record["checksum"]
+
+
+def test_duplicate_check_uses_recomputed_content_identity(tmp_path: Path):
+    packet = tmp_path / "duplicates.pdf"
+    packet.write_bytes(b"duplicates")
+    text = """TOSS-UP
+BIOLOGY
+Short Answer
+What molecule carries hereditary information?
+ANSWER: DNA
+"""
+    with patch("scibowl.bank.pdfplumber.open", return_value=_Pdf([text])):
+        payload = parse_pdfs(packet, "DOE", "regional")
+
+    record = payload["questions"][0]
+    duplicate = dict(record, reviewed=True, id="q_unrelated", checksum="not-a-checksum")
+    record["reviewed"] = True
+    payload["questions"].append(duplicate)
+    assert any("duplicates stable content id" in error for error in validate_staging(payload))
+
+
+def test_load_approved_ignores_reviewer_annotations(tmp_path: Path):
+    packet = tmp_path / "annotations.pdf"
+    packet.write_bytes(b"annotations")
+    text = """TOSS-UP
+BIOLOGY
+Short Answer
+What molecule carries hereditary information?
+ANSWER: DNA
+"""
+    with patch("scibowl.bank.pdfplumber.open", return_value=_Pdf([text])):
+        payload = parse_pdfs(packet, "DOE", "regional")
+
+    payload["questions"][0]["reviewed"] = True
+    payload["questions"][0]["review_note"] = "Checked against page image."
+    assert validate_staging(payload) == []
+    assert load_approved(payload)[0].answer == "DNA"

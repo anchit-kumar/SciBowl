@@ -39,6 +39,14 @@ def test_local_alias_and_formula_case():
     )
 
 
+def test_terminal_accept_annotation_is_judged_locally():
+    judge = AnswerJudge()
+    question = Question("accept", "", "CILIUM (ACCEPT: CILIA OR CILIAE)", "Biology")
+    assert asyncio.run(judge.judge(question, "cilium")).verdict == "correct"
+    assert asyncio.run(judge.judge(question, "cilia")).verdict == "correct"
+    assert asyncio.run(judge.judge(question, "flagellum")).verdict == "ungraded"
+
+
 def test_multiple_choice_is_local():
     question = Question(
         "1", "", "B", "Physics", format="multiple_choice", choices={"A": "one", "B": "two"}
@@ -55,6 +63,18 @@ def test_multiple_choice_is_local():
     )
     assert asyncio.run(AnswerJudge().judge(packet_question, "w")).verdict == "correct"
     assert asyncio.run(AnswerJudge().judge(packet_question, "mitochondria")).verdict == "correct"
+    parenthesized_packet_question = Question(
+        "3",
+        "",
+        "(X) HYDROGEN",
+        "Chemistry",
+        format="multiple_choice",
+        choices={"W": "helium", "X": "hydrogen"},
+    )
+    assert (
+        asyncio.run(AnswerJudge().judge(parenthesized_packet_question, "hydrogen")).verdict
+        == "correct"
+    )
 
 
 async def test_groq_json_and_failure_are_safe():

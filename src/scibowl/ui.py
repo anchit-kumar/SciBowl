@@ -100,7 +100,7 @@ class SettingsNumbers(discord.ui.Modal, title="Counts and timers"):
             self.add_item(field)
 
     async def on_submit(self, interaction):
-        if interaction.user.id != self.parent.owner:
+        if interaction.user.id != self.parent.owner or self.parent.is_finished():
             return await interaction.response.send_message(
                 "These settings belong to another player.", ephemeral=True
             )
@@ -127,7 +127,7 @@ class SettingsSource(discord.ui.Modal, title="Default source"):
         self.add_item(self.source)
 
     async def on_submit(self, interaction):
-        if interaction.user.id != self.parent.owner:
+        if interaction.user.id != self.parent.owner or self.parent.is_finished():
             return await interaction.response.send_message(
                 "These settings belong to another player.", ephemeral=True
             )
@@ -174,7 +174,23 @@ class SettingsView(discord.ui.View):
         await interaction.response.edit_message(content=self.summary(), view=self)
 
     def build(self):
+        self._generation = getattr(self, "_generation", 0) + 1
+        generation = self._generation
         self.clear_items()
+
+        async def current(interaction):
+            if interaction.user.id != self.owner:
+                await interaction.response.send_message(
+                    "These settings belong to another player.", ephemeral=True
+                )
+                return False
+            if self.is_finished() or generation != self._generation:
+                await interaction.response.send_message(
+                    "These settings controls have expired. Reopen /settings.", ephemeral=True
+                )
+                return False
+            return True
+
         mode = discord.ui.Select(
             placeholder="Settings profile",
             options=[
@@ -185,6 +201,8 @@ class SettingsView(discord.ui.View):
         )
 
         async def change_mode(interaction):
+            if not await current(interaction):
+                return
             self.mode = mode.values[0]
             if self.mode == "shared" and self.field == "role":
                 self.field = "categories"
@@ -205,6 +223,8 @@ class SettingsView(discord.ui.View):
         )
 
         async def change_field(interaction):
+            if not await current(interaction):
+                return
             self.field = field.values[0]
             if self.field == "numbers":
                 await interaction.response.send_modal(SettingsNumbers(self))
@@ -238,8 +258,17 @@ class SettingsView(discord.ui.View):
                 row=2,
             )
 
+            editor_mode, editor_field = self.mode, self.field
+
             async def change_value(interaction):
-                self.drafts[self.mode][self.field] = (
+                if not await current(interaction):
+                    return
+                if self.mode != editor_mode or self.field != editor_field:
+                    return await interaction.response.send_message(
+                        "This preference control has expired. Select the preference again.",
+                        ephemeral=True,
+                    )
+                self.drafts[editor_mode][editor_field] = (
                     editor.values if self.field == "categories" else editor.values[0]
                 )
                 await self.refresh(interaction)
@@ -248,6 +277,8 @@ class SettingsView(discord.ui.View):
             self.add_item(editor)
 
         async def save(interaction):
+            if not await current(interaction):
+                return
             await self.store.save_preferences(self.owner, self.drafts, self.dm)
             await interaction.response.edit_message(
                 content="Personal settings saved. Future games use these defaults.", view=None
@@ -255,14 +286,20 @@ class SettingsView(discord.ui.View):
             self.stop()
 
         async def cancel(interaction):
+            if not await current(interaction):
+                return
             await interaction.response.edit_message(content="Unsaved changes discarded.", view=None)
             self.stop()
 
         async def reset(interaction):
+            if not await current(interaction):
+                return
             self.drafts[self.mode] = default_settings(self.mode)
             await self.refresh(interaction)
 
         async def toggle(interaction):
+            if not await current(interaction):
+                return
             self.dm = not self.dm
             await self.refresh(interaction)
 

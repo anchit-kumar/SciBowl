@@ -26,6 +26,8 @@ Properties: `id`, `channel_id`, `starter_id`, `mode`, `settings`, `state`, `curr
 
 Async methods lock internally: `next_question() -> Question | None`, `buzz(user_id, round_id) -> bool`, `submit(user_id, round_id, text, judge) -> Judgment` (judge has async `judge(question,text)`), `timeout(round_id) -> bool`, `skip()`, `pause()`, `resume()`, `finish()`.
 
+Audit additions: `refresh_deadline(round_id)` arms the shared buzz window after the complete question has been delivered; `remaining_seconds()` supplies the remaining monotonic timer duration. The adapter must not schedule an additional full answer window after slow Discord writes. Replaced question views must be stopped, and queued controls must recheck session identity after acquiring their operation lock.
+
 `snapshot() -> dict` serializable session including question queue and attempts; `Session.restore(payload) -> Session` recovers as paused, discarding unfinished question on resume; `leaderboard() -> list[dict]` with user_id, points, correct, incorrect, timeout, accuracy, rank.
 
 State strings: ready, open, answering, judging, revealed, paused, finished. Shared next opens question; solo next enters answering for starter. Wrong/timeout closes round; next advances. No timer task inside engine: Discord layer schedules timeout using configured windows. Engine itself also checks monotonic deadlines. Attempts contain user_id, question (full snapshot dict), answer, verdict (correct/incorrect/timeout/skipped/ungraded), explanation, round_id. API failures map to ungraded. Pause freezes/discards unfinished current question consistently; resume proceeds to fresh question. Lifecycle decisions must not race a pending judge.
@@ -34,6 +36,8 @@ State strings: ready, open, answering, judging, revealed, paused, finished. Shar
 
 Checkpoint 2 uses strict structured verdicts for the default Groq GPT-OSS model and preserves scientific case during local matching. The CLI `doctor` command checks presence and local bank read-only; `--groq` explicitly enables two synthetic live probes. It never connects Discord or prints credentials.
 
+The audit updates judging policy metadata to v3: parenthesized multiple-choice answer labels and explicit terminal `(ACCEPT: ... OR ...)` alternatives can be matched locally.
+
 `AnswerJudge(api_key: str | None = None, model: str = 'openai/gpt-oss-20b')`; async `judge(question: Question, answer: str) -> Judgment`; `close()` if needed. No key: exact/local works; unresolved short answers ungraded. Five second total deadline; no hidden retries. Secrets never logged.
 
 ## Bank
@@ -41,3 +45,7 @@ Checkpoint 2 uses strict structured verdicts for the default Groq GPT-OSS model 
 `parse_pdfs(path: Path, source: str, pool: str, source_url: str = '') -> dict` returns staging object with questions, issues and metadata. `validate_staging(payload: dict) -> list[str]`; `load_approved(payload) -> list[Question]` refuses invalid or unreviewed records. CLI wired by root. Staging must require explicit reviewed flags; no fabricated bank.
 
 Each record requires `reviewed: true`; staging with extraction issues additionally requires `issues_acknowledged: true` after review. Shared participants include the starter, and solo questions have no answer deadline. The Discord adapter serializes lifecycle delivery separately from the engine lock and owns automatic advancement.
+
+Reviewed staging remains editable: `load_approved` derives canonical content checksums and stable IDs from the final reviewed question content. Validation checks duplicate canonical content. Batch metadata may describe mixed sources or pools; each question retains its own provenance.
+
+Storage rejects database versions newer than the supported schema before changing schema metadata. Reads share the transaction lock with writes; cancellation rolls back incomplete writes. Once a session is finalized, repeated finalization cannot replace its historical payload or extend review access to new users.

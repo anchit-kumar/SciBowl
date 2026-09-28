@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import sqlite3
 import time
 import uuid
 from datetime import UTC, datetime
@@ -66,7 +67,11 @@ class QuestionView(discord.ui.View):
     async def buzz(self, interaction):
         await interaction.response.defer(ephemeral=True)
         async with self.app.operation_lock(self.session):
-            if not await self.session.buzz(interaction.user.id, self.round_id):
+            if self.app.sessions.get(
+                self.session.channel_id
+            ) is not self.session or not await self.session.buzz(
+                interaction.user.id, self.round_id
+            ):
                 return await interaction.followup.send(
                     "Another player claimed this question, or its timer expired.", ephemeral=True
                 )
@@ -92,7 +97,11 @@ class QuestionView(discord.ui.View):
     async def reveal(self, interaction):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
-            if self.session.state != "answering" or self.session.round_id != self.round_id:
+            if (
+                self.app.sessions.get(self.session.channel_id) is not self.session
+                or self.session.state != "answering"
+                or self.session.round_id != self.round_id
+            ):
                 return
             await self.session.skip()
             await self.app.reveal(self.session, "Skipped")
@@ -100,12 +109,21 @@ class QuestionView(discord.ui.View):
     async def next_question(self, interaction):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
-            if self.session.state == "revealed" and self.round_id == self.session.round_id:
+            if (
+                self.app.sessions.get(self.session.channel_id) is self.session
+                and self.session.state == "revealed"
+                and self.round_id == self.session.round_id
+            ):
                 await self.app.advance(self.session)
 
     async def stop_game(self, interaction):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
+            if (
+                self.app.sessions.get(self.session.channel_id) is not self.session
+                or self.session.round_id != self.round_id
+            ):
+                return
             await self.app.finalize(self.session, early=True)
 
 
@@ -165,6 +183,7 @@ class BowlBot(discord.Client):
         self.operations = {}
         self.timers = {}
         self.messages = {}
+        self.question_views = {}
         self.channels = {}
         self.last_activity = {}
         self.background = set()
@@ -228,7 +247,24 @@ class BowlBot(discord.Client):
         self.last_activity[session.id] = time.monotonic()
 
     async def persist(self, session):
-        await self.store.save_session(session.id, session.snapshot())
+        try:
+            await self.store.save_session(session.id, session.snapshot())
+        except (sqlite3.Error, OSError):
+            self.cancel_timer(session)
+            await session.pause()
+            self.stop_question_view(session)
+            raise
+
+    def stop_question_view(self, session):
+        view = self.question_views.pop(session.id, None)
+        if view:
+            view.stop()
+
+    def question_view(self, session):
+        self.stop_question_view(session)
+        view = QuestionView(self, session)
+        self.question_views[session.id] = view
+        return view
 
     def cancel_timer(self, session):
         task = self.timers.pop(session.id, None)
@@ -240,9 +276,9 @@ class BowlBot(discord.Client):
         if session.mode != "shared":
             return
         round_id = session.round_id
-        seconds = session.settings[
-            "answer_seconds" if session.state == "answering" else "buzz_seconds"
-        ]
+        seconds = session.remaining_seconds()
+        if seconds is None:
+            return
 
         async def timer():
             await asyncio.sleep(seconds + 0.05)
@@ -253,17 +289,19 @@ class BowlBot(discord.Client):
         self.timers[session.id] = self.spawn(timer())
 
     async def update_controls(self, session):
+        self.stop_question_view(session)
         message = self.messages.get(session.id)
         if message:
             with contextlib.suppress(discord.HTTPException):
                 await message.edit(
-                    view=QuestionView(self, session)
+                    view=self.question_view(session)
                     if session.state not in ("paused", "finished")
                     else None
                 )
 
     async def advance(self, session, already_open=False):
         self.cancel_timer(session)
+        self.stop_question_view(session)
         question = session.current if already_open else await session.next_question()
         if question is None:
             if session.state == "finished":
@@ -282,7 +320,7 @@ class BowlBot(discord.Client):
             try:
                 message = await self.channel(session).send(
                     embed=embed,
-                    view=QuestionView(self, session) if index == len(parts) - 1 else None,
+                    view=self.question_view(session) if index == len(parts) - 1 else None,
                 )
             except discord.HTTPException:
                 await session.pause()
@@ -290,6 +328,7 @@ class BowlBot(discord.Client):
                 log.warning("Question delivery failed; session %s paused", session.id)
                 return
         self.messages[session.id] = message
+        await session.refresh_deadline(session.round_id)
         self.schedule_deadline(session)
 
     async def reveal(self, session, label):
@@ -322,7 +361,8 @@ class BowlBot(discord.Client):
         await interaction.response.defer(ephemeral=True)
         async with self.operation_lock(session):
             if (
-                session.state != "answering"
+                self.sessions.get(session.channel_id) is not session
+                or session.state != "answering"
                 or session.winner_id != interaction.user.id
                 or session.round_id != round_id
             ):
@@ -337,7 +377,15 @@ class BowlBot(discord.Client):
                     label = (
                         "Sorry, I couldn’t check that answer. This question won’t count. Moving on."
                     )
-                await self.reveal(session, label)
+                try:
+                    await self.reveal(session, label)
+                except (sqlite3.Error, OSError):
+                    return await interaction.followup.send(
+                        "Sorry, I couldn't save your answer. The session is paused and the "
+                        "result is held in memory. Restore database access and use /game resume "
+                        "before restarting the bot.",
+                        ephemeral=True,
+                    )
             await interaction.followup.send(
                 "Answer saved, but I could not post the result. The session is paused; "
                 "restore channel permissions and use /game resume."
@@ -364,9 +412,11 @@ class BowlBot(discord.Client):
             log.warning("Leaderboard delivery failed for saved session %s", session.id)
         finally:
             self.spawn(self.deliver_reviews(payload))
-            self.channels.pop(session.channel_id, None)
+            if session.channel_id not in self.sessions:
+                self.channels.pop(session.channel_id, None)
             self.messages.pop(session.id, None)
             self.last_activity.pop(session.id, None)
+            self.operations.pop(session.id, None)
 
     @staticmethod
     def board_pages(payload):
@@ -546,10 +596,13 @@ class BowlBot(discord.Client):
             self.sessions[channel.id] = session
             self.touch(session)
             await self.persist(session)
-            await interaction.followup.send(
-                f"Starting {len(questions)} questions in {channel.mention}.\nCategories: {', '.join(settings['categories'])}\nPool: {settings['pool']} · Source: {settings['source']} · Format: {settings['format']}",
-                ephemeral=True,
-            )
+            try:
+                await interaction.followup.send(
+                    f"Starting {len(questions)} questions in {channel.mention}.\nCategories: {', '.join(settings['categories'])}\nPool: {settings['pool']} · Source: {settings['source']} · Format: {settings['format']}",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                log.warning("Start acknowledgment failed for session %s", session.id)
             async with self.operation_lock(session):
                 await self.advance(session)
             if session.state == "paused":
@@ -562,7 +615,7 @@ class BowlBot(discord.Client):
     async def control(self, interaction, action, mode=None):
         await interaction.response.defer(ephemeral=True)
         session = self.sessions.get(interaction.channel_id)
-        if session is None and mode == "solo":
+        if mode == "solo" and (session is None or session.mode != "solo"):
             session = next(
                 (
                     s
@@ -579,6 +632,10 @@ class BowlBot(discord.Client):
                 "Only the starter or a server manager can do that.", ephemeral=True
             )
         async with self.operation_lock(session):
+            if self.sessions.get(session.channel_id) is not session:
+                return await interaction.followup.send(
+                    "No matching active session.", ephemeral=True
+                )
             self.touch(session)
             if action == "stop":
                 await self.finalize(session, early=True)
