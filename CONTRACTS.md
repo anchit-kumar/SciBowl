@@ -1,4 +1,4 @@
-# Checkpoint 1 contracts
+# Shared application contracts
 
 Python 3.12 / uv. Shared types live in `scibowl.models`.
 
@@ -31,6 +31,8 @@ Async methods lock internally: `next_question() -> Question | None`, `buzz(user_
 State strings: ready, open, answering, judging, revealed, paused, finished. Shared next opens question; solo next enters answering for starter. Wrong/timeout closes round; next advances. No timer task inside engine: Discord layer schedules timeout using configured windows. Engine itself also checks monotonic deadlines. Attempts contain user_id, question (full snapshot dict), answer, verdict (correct/incorrect/timeout/skipped/ungraded), explanation, round_id. API failures map to ungraded. Pause freezes/discards unfinished current question consistently; resume proceeds to fresh question. Lifecycle decisions must not race a pending judge.
 
 ## Judge
+
+Checkpoint 2 uses strict structured verdicts for the default Groq GPT-OSS model and preserves scientific case during local matching. The CLI `doctor` command checks presence and local bank read-only; `--groq` explicitly enables two synthetic live probes. It never connects Discord or prints credentials.
 
 `AnswerJudge(api_key: str | None = None, model: str = 'openai/gpt-oss-20b')`; async `judge(question: Question, answer: str) -> Judgment`; `close()` if needed. No key: exact/local works; unresolved short answers ungraded. Five second total deadline; no hidden retries. Secrets never logged.
 

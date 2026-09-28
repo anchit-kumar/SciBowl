@@ -1,7 +1,7 @@
 """Offline, review-first question-bank parsing helpers.
 
 The parser intentionally produces staging data rather than writing to SQLite.  PDF
-layouts vary enough that a human must mark each extracted question as reviewed
+layouts vary enough that a reviewer must mark each extracted question as reviewed
 before it can enter the playable bank.
 """
 
@@ -110,6 +110,40 @@ def _strip_packet_noise(lines: list[str]) -> list[str]:
     ]
 
 
+def _answer_issues(block: str, answer_match: re.Match[str] | None, fmt: str) -> list[str]:
+    """Flag extraction loss that is unsafe to silently approve."""
+    if not answer_match:
+        return []
+    issues: list[str] = []
+    answer = answer_match.group(1).strip()
+    if fmt == "multiple_choice" and re.match(r"^[A-Z]\)\S", answer):
+        issues.append("multiple-choice answer is missing whitespace after its option letter")
+    trailing = _strip_packet_noise(_clean_lines(block[answer_match.end() :]))
+    trailing = [
+        line
+        for line in trailing
+        if not re.fullmatch(r"~+", line)
+        and not _ROLES.match(line)
+        and not re.match(r"(?i)^stanford science bowl page\s+\d+(?:toss[\s-]*up)?$", line)
+    ]
+    if trailing:
+        issues.append("unexpected non-footer content after ANSWER line (possibly wrapped answer)")
+    return issues
+
+
+def _glyph_issues(text: str, answer: str, choices: dict[str, str]) -> list[str]:
+    """Flag common PDF text-extraction losses; do not attempt mathematical repair."""
+    combined = "\n".join((text, answer, *choices.values()))
+    issues: list[str] = []
+    if "�" in combined:
+        issues.append("replacement character in extracted text")
+    if re.search(r"\b(?:10|x|e)\s*[–—-]\s*\d", combined) or re.search(r"\bx2\b", combined):
+        issues.append("possible lost superscript or mathematical formatting")
+    if re.search(r"\b10\d{1,2}\s+(?:NANOMETERS|METERS|SECONDS)\b", combined, re.IGNORECASE):
+        issues.append("possible lost exponent in scientific notation")
+    return issues
+
+
 def _block_question(
     block: str,
     *,
@@ -165,6 +199,8 @@ def _block_question(
         issues.append(f"page {page}: missing answer")
     if fmt == "multiple_choice" and len(choices) < 2:
         issues.append(f"page {page}: malformed multiple-choice options")
+    issues.extend(f"page {page}: {issue}" for issue in _answer_issues(block, answer_match, fmt))
+    issues.extend(f"page {page}: {issue}" for issue in _glyph_issues(text, answer, choices))
     if not text or not answer or not category:
         return None, issues
 

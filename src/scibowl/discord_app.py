@@ -92,7 +92,7 @@ class QuestionView(discord.ui.View):
     async def reveal(self, interaction):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
-            if self.session.state != "answering":
+            if self.session.state != "answering" or self.session.round_id != self.round_id:
                 return
             await self.session.skip()
             await self.app.reveal(self.session, "Skipped")
@@ -255,7 +255,7 @@ class BowlBot(discord.Client):
     async def update_controls(self, session):
         message = self.messages.get(session.id)
         if message:
-            with contextlib.suppress(discord.NotFound):
+            with contextlib.suppress(discord.HTTPException):
                 await message.edit(
                     view=QuestionView(self, session)
                     if session.state not in ("paused", "finished")
@@ -279,9 +279,16 @@ class BowlBot(discord.Client):
                 title=f"Question {session.round_id} · {question.category}", description=part
             )
             embed.set_footer(text=f"{question.format} · {question.source}"[:2048])
-            message = await self.channel(session).send(
-                embed=embed, view=QuestionView(self, session) if index == len(parts) - 1 else None
-            )
+            try:
+                message = await self.channel(session).send(
+                    embed=embed,
+                    view=QuestionView(self, session) if index == len(parts) - 1 else None,
+                )
+            except discord.HTTPException:
+                await session.pause()
+                await self.persist(session)
+                log.warning("Question delivery failed; session %s paused", session.id)
+                return
         self.messages[session.id] = message
         self.schedule_deadline(session)
 
@@ -291,9 +298,15 @@ class BowlBot(discord.Client):
         await self.update_controls(session)
         if session.current:
             for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
-                await self.channel(session).send(
-                    embed=discord.Embed(title="Result", description=part)
-                )
+                try:
+                    await self.channel(session).send(
+                        embed=discord.Embed(title="Result", description=part)
+                    )
+                except discord.HTTPException:
+                    await session.pause()
+                    await self.persist(session)
+                    log.warning("Result delivery failed; session %s paused", session.id)
+                    return
         if session.mode == "shared" and session.state == "revealed":
             round_id = session.round_id
 
@@ -325,7 +338,13 @@ class BowlBot(discord.Client):
                         "Sorry, I couldn’t check that answer. This question won’t count. Moving on."
                     )
                 await self.reveal(session, label)
-            await interaction.followup.send("Answer processed.", ephemeral=True)
+            await interaction.followup.send(
+                "Answer saved, but I could not post the result. The session is paused; "
+                "restore channel permissions and use /game resume."
+                if session.state == "paused"
+                else "Answer processed.",
+                ephemeral=True,
+            )
 
     async def finalize(self, session, early=False):
         if self.sessions.get(session.channel_id) is not session:
@@ -339,6 +358,10 @@ class BowlBot(discord.Client):
             await self.update_controls(session)
             channel = await self.resolve_channel(session)
             await self.post_leaderboard(channel, payload)
+        except discord.HTTPException:
+            # Results are already committed; Discord delivery must not undo them
+            # or prevent unrelated sessions and private reviews from progressing.
+            log.warning("Leaderboard delivery failed for saved session %s", session.id)
         finally:
             self.spawn(self.deliver_reviews(payload))
             self.channels.pop(session.channel_id, None)
@@ -529,6 +552,12 @@ class BowlBot(discord.Client):
             )
             async with self.operation_lock(session):
                 await self.advance(session)
+            if session.state == "paused":
+                await interaction.followup.send(
+                    "I could not post the question. The session is paused; restore channel "
+                    "permissions and use /game resume in the session channel.",
+                    ephemeral=True,
+                )
 
     async def control(self, interaction, action, mode=None):
         await interaction.response.defer(ephemeral=True)
@@ -579,7 +608,13 @@ class BowlBot(discord.Client):
                     )
                 await session.skip()
                 await self.reveal(session, "Skipped")
-        await interaction.followup.send(f"Session {action} processed.", ephemeral=True)
+        await interaction.followup.send(
+            "Delivery failed and the session is paused. Restore channel permissions "
+            "and use /game resume."
+            if action in ("resume", "skip") and session.state == "paused"
+            else f"Session {action} processed.",
+            ephemeral=True,
+        )
 
     async def maintenance(self):
         await self.wait_until_ready()
@@ -587,15 +622,28 @@ class BowlBot(discord.Client):
         while not self.is_closed():
             today = datetime.now(UTC).date().isoformat()
             if today != last_backup:
-                folder = self.store.path.parent / "backups"
-                await self.store.backup(folder / f"scibowl-{today}.sqlite3")
-                for old in sorted(folder.glob("scibowl-*.sqlite3"))[:-7]:
-                    old.unlink()
-                last_backup = today
+                try:
+                    folder = self.store.path.parent / "backups"
+                    await self.store.backup(folder / f"scibowl-{today}.sqlite3")
+                    for old in sorted(folder.glob("scibowl-*.sqlite3"))[:-7]:
+                        old.unlink()
+                    last_backup = today
+                except Exception as error:  # noqa: BLE001 - keep the supervisor alive; log no secrets
+                    log.warning("Backup maintenance failed (%s); will retry", type(error).__name__)
             for session in list(self.sessions.values()):
                 if time.monotonic() - self.last_activity.get(session.id, 0) > 1800:
-                    async with self.operation_lock(session):
-                        await self.finalize(session, early=True)
+                    try:
+                        async with self.operation_lock(session):
+                            # A user may have acted while maintenance waited for
+                            # an in-flight judgment or another session operation.
+                            if time.monotonic() - self.last_activity.get(session.id, 0) > 1800:
+                                await self.finalize(session, early=True)
+                    except Exception as error:  # noqa: BLE001 - isolate failures between sessions
+                        log.warning(
+                            "Idle session cleanup failed for %s (%s); will retry",
+                            session.id,
+                            type(error).__name__,
+                        )
             await asyncio.sleep(30)
 
     def install_commands(self):

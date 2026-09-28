@@ -34,6 +34,8 @@ The command-line interface is installed as `scibowl`:
 ```powershell
 uv run scibowl bot
 uv run scibowl commands sync
+uv run scibowl doctor
+uv run scibowl doctor --groq
 uv run scibowl bank parse PATH --source NAME --pool regional --source-url URL --output staging/out.json
 uv run scibowl bank parse PATH --source NAME --pool invitational --source-url URL --output staging/out.json
 uv run scibowl bank validate FILE
@@ -50,7 +52,9 @@ Start with released materials from the [DOE high school resources](https://scien
 
 The PDF tool extracts packets into staging JSON and records source URL, page, checksum, category, answer format, and tossup/bonus relationships. A reviewer must correct or explicitly approve each usable record before `bank import`; malformed answers, scans, formulas, diagrams, and unsupported layouts remain quarantined. Check each source’s terms before redistributing questions or a question-bank export.
 
-No real corpus has been downloaded or reviewed, and no live Discord/Groq credentials have been validated at this checkpoint.
+See [question-bank review notes](docs/QUESTION-BANK.md) for the starter corpus and excluded material, and [manual testing](docs/MANUAL-TESTING.md) for the next Discord checks. Downloaded packets, staging JSON, and the playable SQLite database stay local and are not included in Git.
+
+`doctor` checks credential presence, command scope, and the bank without displaying secrets or connecting Discord. `doctor --groq` additionally sends two synthetic answer probes to the configured Groq model; it uses API quota. A passing probe confirms basic connectivity, not general grading accuracy.
 
 ## Running locally
 
@@ -74,7 +78,7 @@ Use SQLite backups for migration and recovery. Keep database backups outside Git
 
 The running bot backs up daily into the database directory's `backups` folder and retains seven copies. For a manual backup, use `uv run scibowl db backup backups/manual.sqlite3`. To restore, stop the bot and set `SCIBOWL_DB` in `.env` to a new, nonexistent filename before `uv run scibowl db restore backups/manual.sqlite3`; restore intentionally refuses to overwrite the live database.
 
-Review controls work while the bot is running, including after a restart. Discord or a process crash can interrupt notification delivery; saved private reviews remain accessible through `/review`. See [checkpoint status](docs/CHECKPOINT-1.md) for remaining live-validation work and the [transcribed agent workflow](docs/WORKFLOW.md).
+Review controls work while the bot is running, including after a restart. Discord or a process crash can interrupt notification delivery; saved private reviews remain accessible through `/review`. See [checkpoint status](docs/CHECKPOINT-2.md) for remaining live-validation work and the [transcribed agent workflow](docs/WORKFLOW.md).
 
 ## Development checks
 

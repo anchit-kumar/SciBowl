@@ -79,6 +79,7 @@ ANSWER: newton
     questions = load_approved(first)
     assert questions[0].id == first["questions"][0]["id"]
     assert questions[0].source == "MIT Science Bowl"
+    assert questions[0].document_checksum == first["questions"][0]["document_checksum"]
 
 
 def test_inline_doe_headers_multiline_options_and_pairing(tmp_path: Path):
@@ -164,3 +165,21 @@ ANSWER: DNA
     assert "staging issues have not been explicitly acknowledged" in validate_staging(payload)
     payload["issues_acknowledged"] = True
     assert validate_staging(payload) == []
+
+
+def test_extraction_damage_after_answer_and_lost_superscript_are_flagged(tmp_path: Path):
+    packet = tmp_path / "damage.pdf"
+    packet.write_bytes(b"damage")
+    text = """TOSS-UP
+1) Physics - Multiple Choice Which quantity equals 10 –3 meters?
+W) A millimeter
+X) A kilometer
+ANSWER: W)Amillimeter
+2
+"""
+    with patch("scibowl.bank.pdfplumber.open", return_value=_Pdf([text])):
+        payload = parse_pdfs(packet, "DOE", "regional")
+    joined = " ".join(payload["issues"])
+    assert "missing whitespace" in joined
+    assert "unexpected non-footer content after ANSWER" in joined
+    assert "lost superscript" in joined

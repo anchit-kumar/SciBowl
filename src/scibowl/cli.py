@@ -19,6 +19,12 @@ def parser():
     root = argparse.ArgumentParser(prog="scibowl")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("bot", help="Run the Discord bot")
+    doctor = sub.add_parser(
+        "doctor", help="Check configuration and local bank without connecting Discord"
+    )
+    doctor.add_argument(
+        "--groq", action="store_true", help="Also send two synthetic answers to Groq"
+    )
     commands = sub.add_parser("commands").add_subparsers(dest="action", required=True)
     commands.add_parser("sync", help="Register commands in DISCORD_GUILD_ID or globally")
     bank = sub.add_parser("bank").add_subparsers(dest="action", required=True)
@@ -52,6 +58,12 @@ def configure_logging():
 
 
 async def run(args):
+    if args.command == "doctor":
+        from .preflight import check
+
+        if not await check(groq=args.groq):
+            raise SystemExit(1)
+        return
     db_path = Path(os.getenv("SCIBOWL_DB", "data/scibowl.sqlite3"))
     if args.command in ("bot", "commands"):
         from .discord_app import BowlBot
