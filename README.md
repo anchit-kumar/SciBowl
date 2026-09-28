@@ -58,7 +58,7 @@ Imports create editable staging data; only explicitly reviewed records may enter
 
 ## Question bank and review gate
 
-The current local bank contains **2,700 questions** after the user-requested [Oly archive](https://oly.mehvix.com/) expansion: 1,448 tossups and 1,252 bonuses across six science subjects. **Pool: All** is the default for shared and solo play; the regional-only pool has 109 questions. Existing local player profiles were also switched to All at the user's request. Players can still choose a narrower pool in setup or `/settings`. See the [import summary and verification](docs/OLY-IMPORT.md). Question data remains local and is not included in Git.
+The current local bank contains **5,255 questions** after the user-requested [Oly archive](https://oly.mehvix.com/) expansion: 2,835 tossups and 2,420 bonuses across seven science categories. **Pool: All** is the default for shared and solo play; the regional-only pool has 109 questions. Existing local player profiles were also switched to All at the user's request. Players can still choose a narrower pool in setup or `/settings`. See the [import summary and verification](docs/OLY-IMPORT.md). Question data remains local and is not included in Git.
 
 Start with released materials from the [DOE high school resources](https://science.osti.gov/wdts/nsb/Regional-Competitions/Resources/HS-Sample-Questions), [MIT Science Bowl resources](https://www.mitsciencebowl.com/high-school/resources), and [Stanford Science Bowl past questions](https://scibowl.stanford.edu/past-questions). Treat [SciBowlDB](https://github.com/CQCumbers/scibowldb) as a supplementary source only after provenance is checked.
 

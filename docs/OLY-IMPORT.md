@@ -2,7 +2,62 @@
 
 Imported into the configured local SQLite database on September 27, 2026 (local time).
 
-## Result
+## Current result after complete archive review
+
+**5,255 playable questions:** the original 79 plus 2,621 from the initial Oly
+review and **2,555 more** from the complete 400-PDF archive. The final import
+added 1,387 tossups and 1,168 bonuses. Current totals are 2,835 tossups, 2,420
+bonuses, 1,874 multiple-choice, and 3,381 short-answer questions. The regional
+pool still has 109; the invitational pool has 5,146.
+
+| Subject | Current total |
+| --- | ---: |
+| Biology | 1,178 |
+| Chemistry | 946 |
+| Earth and Space Science | 1,215 |
+| Energy | 522 |
+| General Science | 109 |
+| Mathematics | 487 |
+| Physics | 798 |
+
+The second review covered all **254 newly downloaded packet PDFs** across 14
+archive folders, plus one regional packet that overlapped the first download;
+the first 146 PDFs had already been processed. Family review scripts produced
+3,626 validated candidates. Integration rejected 702 after
+review because of independent source-page mismatches, damaged or ambiguous text,
+and conflicting multiple-choice answer keys; it excluded another 369 duplicate
+IDs/content/prompts, leaving 2,555 unique new records. Exact exclusion and
+duplicate lists are in `staging/oly-full-integration-manifest.json`.
+
+An independent Poppler check compared every retained candidate's prompt,
+answer, and choices with its cited PDF page. A separate pass rejected answer
+prefixes missing wrapped continuation text, suspicious joined words, invisible
+formatting, displaced numerals, and ambiguous formulas. Representative rendered
+pages were inspected for each packet family. This was **automated source-page
+comparison plus sampled visual review**, not exhaustive visual or scientific
+fact-checking. Some packets (especially visual-only LOST 2 PDFs and unverified
+replacement/answer layouts) contributed no questions; they remain downloaded for
+future OCR or manual transcription.
+
+The import created a consistent SQLite backup at
+`data/backups/before-oly-full-20260928T041840Z.sqlite3`. It inserted exactly
+2,555 rows; repeat import inserted zero. SQLite `integrity_check` returned
+`ok`. Comparison with the backup confirmed all 2,700 previous question payloads
+and all other application tables unchanged. On this machine, 25 local selections
+of 20 random tossups took **2.95 ms median / 3.70 ms maximum** for SQLite fetch
+and decoding only. This does not measure Discord delivery or Groq judging.
+
+The ignored artifacts `staging/oly-full-{a,b,c}-reviewed.json`, their review
+manifests/scripts, `staging/oly-full-poppler-audit.json`,
+`staging/oly-full-combined-reviewed.json`, and the integration manifest preserve
+review decisions. The combined reviewed file can be reimported with
+`uv run scibowl bank import staging/oly-full-combined-reviewed.json` if restoring
+a database; duplicate stable IDs are skipped. Do not rerun the assembly helper
+against an already-expanded bank merely to reimport: it selects records absent
+from the current database. New sessions read the expanded SQLite bank directly;
+already-created sessions keep their queue.
+
+## Initial 146-PDF import (historical checkpoint)
 
 **2,621 questions added; 2,700 total.** The original 79 questions remain unchanged.
 Source packets came from the user-requested [Oly archive](https://oly.mehvix.com/).
@@ -31,10 +86,8 @@ These are download-integrity checks, not validation of extracted question text.
 - `staging/download_all_oly.py`: local resumable download helper (three parallel
   requests, bounded retries, atomic file writes).
 
-All of these artifacts remain ignored by Git. **Downloading the complete archive
-does not add questions to SQLite**: the playable bank still contains the 2,700
-reviewed questions documented here. Additional packets need extraction, review,
-and deduplication through the import pipeline before becoming playable.
+All of these artifacts remain ignored by Git. The complete archive review and
+second import described above added 2,555 playable questions from this download.
 
 ## Imported question totals
 
