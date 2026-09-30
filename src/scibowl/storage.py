@@ -9,6 +9,7 @@ from pathlib import Path
 import aiosqlite
 
 from .models import Question, default_settings, validate_settings
+from .replacements import LEDGER_SCHEMA, correct_question
 
 
 class Store:
@@ -62,6 +63,8 @@ class Store:
             PRAGMA user_version=1;
         """)
         await self.db.commit()
+        await self.db.execute(LEDGER_SCHEMA)
+        await self.db.commit()
         return self
 
     @asynccontextmanager
@@ -81,6 +84,13 @@ class Store:
 
     async def import_questions(self, questions: list[Question]) -> int:
         async with self._transaction():
+            # Read the ledger after obtaining the write lock so maintenance cannot race replay.
+            await self.db.execute("BEGIN IMMEDIATE")
+            async with self.db.execute(
+                "SELECT old_id,payload FROM question_replacements"
+            ) as cursor:
+                replacements = {row[0]: json.loads(row[1]) for row in await cursor.fetchall()}
+            questions = [correct_question(q, replacements) for q in questions]
             before = self.db.total_changes
             await self.db.executemany(
                 "INSERT OR IGNORE INTO questions VALUES (?,?,?,?,?,?,?)",

@@ -12,6 +12,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .bank import load_approved, parse_pdfs, validate_staging
+from .replacements import apply_replacements
 from .storage import Store
 
 
@@ -36,6 +37,11 @@ def parser():
     parse.add_argument("--output", type=Path, default=Path("staging/questions.json"))
     for name in ("validate", "import"):
         bank.add_parser(name).add_argument("path", type=Path)
+    replace = bank.add_parser(
+        "replace", help="Validate reviewed text replacements; dry run by default"
+    )
+    replace.add_argument("path", type=Path)
+    replace.add_argument("--apply", action="store_true", help="Back up and apply atomically")
     db = sub.add_parser("db").add_subparsers(dest="action", required=True)
     for name in ("backup", "restore"):
         db.add_parser(name).add_argument("path", type=Path)
@@ -99,6 +105,10 @@ async def run(args):
         print(
             f"Staged {len(payload['questions'])} questions with {len(payload['issues'])} issues in {args.output}."
         )
+        return
+    if args.command == "bank" and args.action == "replace":
+        payload = json.loads(args.path.read_text(encoding="utf-8"))
+        print(json.dumps(apply_replacements(db_path, payload, apply=args.apply), indent=2))
         return
     if args.command == "bank":
         payload = json.loads(args.path.read_text(encoding="utf-8"))

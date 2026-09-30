@@ -1,5 +1,11 @@
 # Shared application contracts
 
+## Readable math text ownership
+
+Math formatting rules, review output contract, and checkpoints: `docs/MATH-TEXT-PLAN.md`. Review workers own only numbered ignored staging outputs; root owns integration and database apply. This feature uses existing Discord text delivery. Formula formatting must preserve answer matching, canonical content identity rules, and historical snapshots.
+
+`bank replace PATH [--apply]`: reviewed old/new canonical question snapshots; dry run by default. Apply verifies exact old payloads and destination conflicts, saves a backup/audit, and commits question updates plus import history atomically. Optional `history` registers previously applied repairs. Additive schema-v1 `question_replacements(old_id,payload)` stores old/new transitions; `Store.import_questions` replays them under a database write lock before deduplication, preserving incoming provenance and accepted aliases. Existing session/review snapshots are never rewritten. Repeating an applied batch is a no-op. Keep replacement files and audits ignored.
+
 ## Playtest feedback checkpoint
 
 - Shared questions remain public. After the configured `hide_seconds` delay following a valid buzz (default 0.5 seconds, range 0–10), delete every message containing that question, including choices and overflow chunks. A private Answer button and /answer remain usable. Restore the question after correct/incorrect/ungraded judgments and answer timeouts; wrong/timeouts reset the full configured buzz window after redelivery, retaining per-player lockouts. Cancel pending deletion when an early verdict closes the claim. Deletion runs during API judging without blocking on its operation lock; lifecycle actions wait for in-flight deletion before restoring or advancing. Solo play is unchanged. `hide_seconds` accepts finite fractional seconds; 0 starts deletion immediately. It follows explicit start option > starter saved profile > built-in default precedence. Legacy profiles and session snapshots without the key use 0.5 seconds.

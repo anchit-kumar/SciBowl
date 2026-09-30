@@ -1,5 +1,13 @@
 # Question bank operations
 
+## Reviewed text replacements
+
+Use `uv run scibowl bank replace PATH` to check a reviewed replacement file without writing. Add `--apply` to save a verified backup and audit under the database's `backups/` directory, then apply atomically. Stop/restart the bot around maintenance so queued questions use the updated text. On Ubuntu with the separate environment: `UV_PROJECT_ENVIRONMENT=.venv-ubuntu uv run --locked scibowl bank replace PATH --apply`.
+
+The ignored JSON file requires `reviewed: true`, a `changes` list of complete canonical `old`/`new` question snapshots, and optional `history` containing previously applied transitions. Each edit increments revision; provenance and choice labels stay unchanged. Exact old payloads and destination identities are checked. Failed writes roll back; the backup and prewritten audit remain available for inspection. Repeating an applied batch makes no changes.
+
+The SQLite replacement ledger follows old IDs through repairs during future reviewed imports, retaining importing packet provenance and accepted aliases before deduplication. Database backups include this ledger; saved sessions/reviews retain their original snapshots. PDFs, replacement files, audit files, and question content remain outside Git.
+
 The playable bank is local SQLite data. Packet PDFs and staging JSON stay outside
 Git because they contain third-party question text. The committed importer never
 downloads packets while the bot is running.
