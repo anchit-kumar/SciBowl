@@ -60,10 +60,22 @@ def default_settings(mode: str = "shared") -> dict[str, Any]:
         "buzz_seconds": 30,
         "answer_seconds": 15,
         "hide_seconds": 0.5,
+        "reading_mode": "paced" if mode == "shared" else "full",
+        "reading_wpm": 180,
     }
 
 
 def validate_settings(value: dict[str, Any]) -> None:
+    reading_mode = value.get("reading_mode", "paced")
+    if reading_mode not in ("paced", "full"):
+        raise ValueError("Reading mode must be paced or full.")
+    reading_wpm = value.get("reading_wpm", 180)
+    if (
+        isinstance(reading_wpm, bool)
+        or not isinstance(reading_wpm, int)
+        or not 60 <= reading_wpm <= 300
+    ):
+        raise ValueError("Reading speed must be an integer from 60 to 300 WPM.")
     if not isinstance(value.get("count"), int) or not 1 <= value["count"] <= 100:
         raise ValueError("Question count must be between 1 and 100.")
     categories = value.get("categories", [])

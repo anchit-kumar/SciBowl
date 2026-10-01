@@ -7,6 +7,7 @@ square brackets are optional; do not type the brackets.
 
 | Command | Brief description |
 | --- | --- |
+| `/game speed words_per_minute:180` | Starter sets 60–300 WPM for the next question; current question/rebounds keep their speed. |
 | `/game start` | Open a private shared-game setup panel using your saved defaults. Adjust settings, then press Start game. |
 | `/game pause` | Pause the current session. The unfinished question is discarded when resumed. |
 | `/game resume` | Resume a paused or recovered session with a fresh question. |
@@ -42,6 +43,8 @@ built-in defaults. A shared game uses only its starter's settings.
 | `pool` | Both start commands | `regional`, `invitational`, or `all`. Built-in default `all`. |
 | `source` | Both start commands | Exact source name from `/sources`, or `all`. |
 | `format` | Both start commands | `short_answer`, `multiple_choice`, or `all`. |
+| `paced_reading` | `/game start` | Shared paced reading On by default; False shows full text immediately. Also configurable in setup/settings. |
+| `reading_wpm` | `/game start` | Integer 60–300 words/minute; default 180. |
 | `buzz_seconds` | `/game start` | 5–120 seconds to buzz; built-in default 30. |
 | `answer_seconds` | `/game start` | 5–120 seconds to answer after buzzing; built-in default 15. |
 | `hide_seconds` | `/game start` | 0–10 seconds before hiding the public question after a buzz; fractional values allowed, default 0.5. Zero starts deletion immediately. |
@@ -88,7 +91,8 @@ access through `/review`. Review buttons require the bot to be online.
 
 The public question text and choices are deleted after `hide_seconds` following a successful
 buzz (default 0.5 seconds), then reposted after judging or an answer timeout. Incorrect answers and
-answer timeouts reset the full `buzz_seconds` window after the question is restored.
+answer timeouts restore the already-revealed prefix and continue paced reading. The full
+`buzz_seconds` window starts once reading finishes; with full-text mode, it starts after restoration.
 Correct answers reveal the result and advance normally. If judging finishes before
 the configured delay expires, pending deletion is canceled. Change the delay with
 **Hide after buzz** in game setup, or `/settings` → Shared → Numbers → Save.

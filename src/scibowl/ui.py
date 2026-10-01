@@ -98,6 +98,7 @@ class SettingsNumbers(discord.ui.Modal, title="Counts and timers"):
         ]
         if self.profile == "shared":
             fields.append(("hide_seconds", "Hide after buzz (0–10 seconds)"))
+            fields.append(("reading_wpm", "Reading speed (60–300 WPM)"))
         for name, label in fields:
             field = discord.ui.TextInput(
                 label=label,
@@ -176,7 +177,8 @@ class SettingsView(discord.ui.View):
         value = self.drafts[self.mode]
         timing = (
             f"Buzz: {value['buzz_seconds']}s · Answer: {value['answer_seconds']}s · "
-            f"Hide after buzz: {value.get('hide_seconds', 0.5):g}s"
+            f"Hide after buzz: {value.get('hide_seconds', 0.5):g}s · "
+            f"Reading: {value.get('reading_mode', 'paced')} at {value.get('reading_wpm', 180)} WPM"
             if self.mode == "shared"
             else "Private practice is untimed."
         )
@@ -223,7 +225,9 @@ class SettingsView(discord.ui.View):
             if not await current(interaction):
                 return
             self.mode = mode.values[0]
-            if self.mode == "shared" and self.field == "role":
+            if (self.mode == "shared" and self.field == "role") or (
+                self.mode == "solo" and self.field == "reading_mode"
+            ):
                 self.field = "categories"
             await self.refresh(interaction)
 
@@ -232,6 +236,8 @@ class SettingsView(discord.ui.View):
         fields = ["categories", "pool", "format", "numbers", "source"]
         if self.mode == "solo":
             fields.append("role")
+        else:
+            fields.append("reading_mode")
         field = discord.ui.Select(
             placeholder="Preference to edit",
             options=[
@@ -259,6 +265,7 @@ class SettingsView(discord.ui.View):
             "pool": ("regional", "invitational", "all"),
             "format": ("short_answer", "multiple_choice", "all"),
             "role": ("tossup", "bonus", "all"),
+            "reading_mode": ("paced", "full"),
         }
         if self.field in values:
             selected = self.drafts[self.mode][self.field]

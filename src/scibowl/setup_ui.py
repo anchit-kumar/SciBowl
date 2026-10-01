@@ -12,7 +12,7 @@ from .models import CATEGORIES, validate_settings
 def help_embed() -> discord.Embed:
     return discord.Embed(
         title="Science Bowl commands",
-        description="```\n/game start        Set up a shared game\n/practice start    Set up private practice\n/game pause | resume | skip | stop\n/practice stop     End private practice\n/answer             Submit after buzzing\n/review             Open your saved review\n/clear              Clear latest session messages\n/settings           Set defaults and review DMs\n/score | /stats     View your results\n/sources | /status  Inspect the question bank\n/admin settings     Configure allowed channels\n```",
+        description="```\n/game start        Set up a shared game\n/practice start    Set up private practice\n/game pause | resume | skip | stop\n/game speed        Set next question reading speed\n/practice stop     End private practice\n/answer             Submit after buzzing\n/review             Open your saved review\n/clear              Clear latest session messages\n/settings           Set defaults and review DMs\n/score | /stats     View your results\n/sources | /status  Inspect the question bank\n/admin settings     Configure allowed channels\n```",
         color=discord.Color.blurple(),
     ).set_footer(
         text="Setup choices apply only to this session. /settings changes future defaults."
@@ -26,6 +26,7 @@ class NumericSetupModal(discord.ui.Modal):
             "buzz_seconds": "Buzz time (5-120)",
             "answer_seconds": "Answer time (5-120)",
             "hide_seconds": "Hide after buzz (0-10 seconds)",
+            "reading_wpm": "Reading speed (60-300 WPM)",
         }[field]
         super().__init__(title=label)
         self.view, self.field = view, field
@@ -58,7 +59,7 @@ class NumericSetupModal(discord.ui.Modal):
             validate_settings(candidate)
         except (TypeError, ValueError):
             await interaction.response.send_message(
-                "Use 1-100 questions, 5-120 seconds for timers, or 0-10 seconds to hide.",
+                "Use 1-100 questions, 5-120 timer seconds, 0-10 hide seconds, or 60-300 WPM.",
                 ephemeral=True,
             )
             return
@@ -69,7 +70,7 @@ class NumericSetupModal(discord.ui.Modal):
 class GameSetupView(discord.ui.View):
     """Owner-only, disposable setup UI. It never persists personal defaults."""
 
-    fields = ("pool", "format", "source", "role")
+    fields = ("pool", "format", "source", "role", "reading_mode")
 
     def __init__(
         self,
@@ -96,6 +97,7 @@ class GameSetupView(discord.ui.View):
         text += (
             f"**Buzz:** {self.settings['buzz_seconds']}s | **Answer:** {self.settings['answer_seconds']}s"
             f" | **Hide after buzz:** {self.settings.get('hide_seconds', 0.5):g}s"
+            f" | **Reading:** {self.settings.get('reading_mode', 'paced')} at {self.settings.get('reading_wpm', 180)} WPM"
             if self.mode == "shared"
             else "**Timing:** Untimed private practice"
         )
@@ -139,7 +141,12 @@ class GameSetupView(discord.ui.View):
         )
         cats.callback = self._guard(generation, self._choose_categories)
         self.add_item(cats)
-        fields = [x for x in self.fields if self.mode == "solo" or x != "role"]
+        fields = [
+            x
+            for x in self.fields
+            if (self.mode == "solo" and x != "reading_mode")
+            or (self.mode == "shared" and x != "role")
+        ]
         field = discord.ui.Select(
             placeholder="Choose a setting to edit",
             row=1,
@@ -157,12 +164,15 @@ class GameSetupView(discord.ui.View):
             self._add_source_navigation(generation)
         else:
             names = (
-                ("count", "buzz_seconds", "answer_seconds") if self.mode == "shared" else ("count",)
+                ("count", "buzz_seconds", "answer_seconds", "reading_wpm")
+                if self.mode == "shared"
+                else ("count",)
             )
             labels = {
                 "count": "Question count",
                 "buzz_seconds": "Buzz time",
                 "answer_seconds": "Answer time",
+                "reading_wpm": "Reading speed (WPM)",
             }
             for name in names:
                 button = discord.ui.Button(label=labels[name], row=3)
@@ -207,6 +217,7 @@ class GameSetupView(discord.ui.View):
                 "pool": ("regional", "invitational", "all"),
                 "format": ("short_answer", "multiple_choice", "all"),
                 "role": ("tossup", "bonus", "all"),
+                "reading_mode": ("paced", "full"),
             }[self.selected_field]
             options = [
                 discord.SelectOption(

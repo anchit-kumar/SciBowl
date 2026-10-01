@@ -34,6 +34,7 @@ class Session:
             questions[: int(self.settings.get("count", len(questions)))]
         )
         self._deadline: float | None = None
+        self.reading = False
 
     def _expired(self) -> bool:
         return self._deadline is not None and time.monotonic() >= self._deadline
@@ -45,6 +46,7 @@ class Session:
         """Give players the full buzz window once the complete question is delivered."""
         async with self.lock:
             if self.mode == "shared" and self.state == "open" and self.round_id == round_id:
+                self.reading = False
                 self._deadline = time.monotonic() + float(self.settings.get("buzz_seconds", 30))
 
     async def next_question(self) -> Question | None:
@@ -61,6 +63,9 @@ class Session:
                 self.state = "finished"
                 return None
             self.round_id += 1
+            self.reading = (
+                self.mode == "shared" and self.settings.get("reading_mode", "full") == "paced"
+            )
             if self.mode == "solo":
                 self.participants.add(self.starter_id)
                 self.winner_id = self.starter_id
@@ -68,7 +73,11 @@ class Session:
                 self._deadline = None  # Solo practice is intentionally untimed.
             else:
                 self.state = "open"
-                self._deadline = time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+                self._deadline = (
+                    None
+                    if self.reading
+                    else time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+                )
             return self.current
 
     async def buzz(self, user_id: int, round_id: int) -> bool:
@@ -119,7 +128,11 @@ class Session:
             self.locked_out.add(user_id)
             self.winner_id = None
             self.state = "open"
-            self._deadline = time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+            self._deadline = (
+                None
+                if self.reading
+                else time.monotonic() + float(self.settings.get("buzz_seconds", 30))
+            )
         else:
             self.state, self._deadline = "revealed", None
 

@@ -14,6 +14,7 @@ from discord import app_commands
 from .engine import Session
 from .judging import AnswerJudge
 from .models import CATEGORIES, validate_settings
+from .reading import Reading, question_text
 from .session_messages import PrivateMessages
 from .setup_ui import GameSetupView, help_embed
 from .storage import Store
@@ -91,6 +92,7 @@ class QuestionView(discord.ui.View):
                     self.session.id,
                     "Another player claimed this question, you already missed it, or its timer expired.",
                 )
+            self.app.cancel_reading(self.session)
             self.app.schedule_question_hide(self.session)
             await self.app.persist(self.session)
             await self.app.update_controls(self.session)
@@ -170,9 +172,12 @@ class BowlBot(discord.Client):
         self.sessions = {}
         self.operations = {}
         self.timers = {}
+        self.readings = {}
+        self.reading_tasks = {}
         self.messages = {}
         self.question_views = {}
         self.question_messages = {}
+        self.question_rendered = {}
         self.hide_tasks = {}
         self.hiding_started = set()
         self.hidden_questions = set()
@@ -323,6 +328,7 @@ class BowlBot(discord.Client):
 
     async def restore_question(self, session):
         if not await self.finish_question_hide(session):
+            self.cancel_reading(session)
             self.cancel_timer(session)
             await session.pause()
             await self.persist(session)
@@ -347,6 +353,7 @@ class BowlBot(discord.Client):
             except (sqlite3.Error, OSError):
                 session = self.sessions.get(channel.id)
                 if session and session.id == session_id:
+                    self.cancel_reading(session)
                     self.cancel_timer(session)
                     await session.pause()
                     self.stop_question_view(session)
@@ -357,6 +364,7 @@ class BowlBot(discord.Client):
         try:
             await self.store.save_session(session.id, session.snapshot())
         except (sqlite3.Error, OSError):
+            self.cancel_reading(session)
             self.cancel_timer(session)
             await session.pause()
             self.stop_question_view(session)
@@ -372,6 +380,77 @@ class BowlBot(discord.Client):
         view = QuestionView(self, session)
         self.question_views[session.id] = view
         return view
+
+    def cancel_reading(self, session):
+        task = self.reading_tasks.pop(session.id, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+
+    async def reading_tick(self):
+        await asyncio.sleep(1)
+
+    def continue_reading(self, session):
+        self.cancel_reading(session)
+        reading = self.readings.get(session.id)
+        if not reading or reading.done:
+            return
+        round_id = session.round_id
+
+        async def reader():
+            try:
+                while not reading.done:
+                    await self.reading_tick()
+                    async with self.operation_lock(session):
+                        if (
+                            self.sessions.get(session.channel_id) is not session
+                            or session.round_id != round_id
+                            or session.state != "open"
+                            or self.readings.get(session.id) is not reading
+                        ):
+                            return
+                        before = reading.visible
+                        reading.step()
+                        if reading.visible != before and not await self.render_question(session):
+                            return
+                        if reading.done:
+                            await session.refresh_deadline(round_id)
+                            self.schedule_deadline(session)
+            finally:
+                if self.reading_tasks.get(session.id) is asyncio.current_task():
+                    self.reading_tasks.pop(session.id, None)
+
+        self.reading_tasks[session.id] = self.spawn(reader())
+
+    async def set_reading_speed(self, interaction, words_per_minute):
+        await interaction.response.defer(ephemeral=True)
+        session = self.sessions.get(interaction.channel_id)
+        if not session or session.mode != "shared":
+            return await interaction.followup.send("No active shared game here.", ephemeral=True)
+        async with self.operation_lock(session):
+            if (
+                self.sessions.get(interaction.channel_id) is not session
+                or session.state == "finished"
+                or interaction.user.id != session.starter_id
+            ):
+                return await interaction.followup.send(
+                    "Only this game's starter can change its reading speed.", ephemeral=True
+                )
+            if (
+                isinstance(words_per_minute, bool)
+                or not isinstance(words_per_minute, int)
+                or not 60 <= words_per_minute <= 300
+            ):
+                return await interaction.followup.send(
+                    "Use an integer speed from 60–300 WPM.", ephemeral=True
+                )
+            session.settings["reading_wpm"] = words_per_minute
+            await self.persist(session)
+            self.touch(session)
+            await interaction.followup.send(
+                f"Reading speed: {words_per_minute} WPM, starting with the next question. "
+                "The current question and its rebounds keep their existing speed.",
+                ephemeral=True,
+            )
 
     def cancel_timer(self, session):
         task = self.timers.pop(session.id, None)
@@ -402,6 +481,7 @@ class BowlBot(discord.Client):
 
     async def update_controls(self, session):
         if session.state in ("paused", "finished"):
+            self.cancel_reading(session)
             await self.finish_question_hide(session)
         self.stop_question_view(session)
         message = self.messages.get(session.id)
@@ -414,6 +494,8 @@ class BowlBot(discord.Client):
                 )
 
     async def advance(self, session, already_open=False):
+        self.cancel_reading(session)
+        self.readings.pop(session.id, None)
         self.cancel_timer(session)
         await self.finish_question_hide(session)
         self.hidden_questions.discard(session.id)
@@ -423,41 +505,75 @@ class BowlBot(discord.Client):
             if session.state == "finished":
                 await self.finalize(session)
             return
+        if session.reading:
+            reading = Reading(question_text(question), session.settings.get("reading_wpm", 180))
+            reading.step()
+            self.readings[session.id] = reading
         await self.persist(session)
         if not await self.post_question(session):
             return
-        await session.refresh_deadline(session.round_id)
-        self.schedule_deadline(session)
+        reading = self.readings.get(session.id)
+        if reading and not reading.done:
+            self.continue_reading(session)
+        else:
+            await session.refresh_deadline(session.round_id)
+            self.schedule_deadline(session)
 
     async def post_question(self, session):
-        question = session.current
         self.question_messages[session.id] = []
-        text = question.text
-        if question.choices:
-            text += "\n\n" + "\n".join(f"{key}) {value}" for key, value in question.choices.items())
-        parts = chunks(text)
+        self.question_rendered[session.id] = []
+        return await self.render_question(session)
+
+    async def render_question(self, session):
+        question = session.current
+        reading = self.readings.get(session.id)
+        text = reading.visible if reading else question_text(question)
+        parts = chunks(text or "Reading…")
+        messages = self.question_messages.setdefault(session.id, [])
+        rendered = self.question_rendered.setdefault(session.id, [])
         for index, part in enumerate(parts):
             embed = discord.Embed(
                 title=f"Question {session.round_id} · {question.category}", description=part
             )
-            embed.set_footer(text=f"{question.format} · {question.source}"[:2048])
+            footer = f"{question.format} · {question.source}"
+            if reading and not reading.done:
+                footer += f" · Reading at {reading.wpm} WPM"
+            embed.set_footer(text=footer[:2048])
+            signature = (part, footer, index == len(parts) - 1, session.state)
+            if index < len(rendered) and rendered[index] == signature:
+                continue
+            view = self.question_view(session) if index == len(parts) - 1 else None
             try:
-                message = await self.send_session_message(
-                    session.id,
-                    self.channel(session),
-                    embed=embed,
-                    view=self.question_view(session) if index == len(parts) - 1 else None,
-                )
-                self.question_messages[session.id].append(message)
+                if index < len(messages):
+                    await messages[index].edit(embed=embed, view=view)
+                else:
+                    message = await self.send_session_message(
+                        session.id,
+                        self.channel(session),
+                        embed=embed,
+                        view=view,
+                    )
+                    messages.append(message)
+                if index < len(rendered):
+                    rendered[index] = signature
+                else:
+                    rendered.append(signature)
             except discord.HTTPException:
+                self.cancel_reading(session)
+                self.cancel_timer(session)
                 await session.pause()
                 await self.persist(session)
+                await self.update_controls(session)
                 log.warning("Question delivery failed; session %s paused", session.id)
                 return False
-        self.messages[session.id] = message
+        self.messages[session.id] = messages[-1]
         return True
 
     async def reveal(self, session, label):
+        self.cancel_reading(session)
+        reading = self.readings.get(session.id)
+        if reading:
+            reading.finish()
         self.cancel_timer(session)
         await self.persist(session)
         previous_view = self.question_views.get(session.id)
@@ -465,6 +581,8 @@ class BowlBot(discord.Client):
             return
         if self.question_views.get(session.id) is previous_view:
             await self.update_controls(session)
+        if reading and not await self.render_question(session):
+            return
         if session.current:
             for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
                 try:
@@ -512,8 +630,12 @@ class BowlBot(discord.Client):
             await self.persist(session)
             await self.update_controls(session)
             return
-        await session.refresh_deadline(session.round_id)
-        self.schedule_deadline(session)
+        reading = self.readings.get(session.id)
+        if reading and not reading.done:
+            self.continue_reading(session)
+        else:
+            await session.refresh_deadline(session.round_id)
+            self.schedule_deadline(session)
 
     async def submit_answer(self, interaction, session, round_id, text):
         await interaction.response.defer(ephemeral=True)
@@ -575,6 +697,8 @@ class BowlBot(discord.Client):
     async def finalize(self, session, early=False):
         if self.sessions.get(session.channel_id) is not session:
             return
+        self.cancel_reading(session)
+        self.readings.pop(session.id, None)
         self.cancel_timer(session)
         await session.finish()
         payload = dict(session.snapshot(), leaderboard=session.leaderboard(), ended_early=early)
@@ -594,6 +718,7 @@ class BowlBot(discord.Client):
                 self.channels.pop(session.channel_id, None)
             self.messages.pop(session.id, None)
             self.question_messages.pop(session.id, None)
+            self.question_rendered.pop(session.id, None)
             self.hidden_questions.discard(session.id)
             self.last_activity.pop(session.id, None)
             self.operations.pop(session.id, None)
@@ -1055,6 +1180,8 @@ class BowlBot(discord.Client):
             buzz_seconds: app_commands.Range[int, 5, 120] | None = None,
             answer_seconds: app_commands.Range[int, 5, 120] | None = None,
             hide_seconds: app_commands.Range[float, 0.0, 10.0] | None = None,
+            reading_wpm: app_commands.Range[int, 60, 300] | None = None,
+            paced_reading: bool | None = None,
         ):
             await interaction.response.defer(ephemeral=True)
             names = {item.casefold(): item for item in CATEGORIES}
@@ -1081,6 +1208,10 @@ class BowlBot(discord.Client):
                 buzz_seconds=buzz_seconds,
                 answer_seconds=answer_seconds,
                 hide_seconds=hide_seconds,
+                reading_wpm=reading_wpm,
+                reading_mode=("paced" if paced_reading else "full")
+                if paced_reading is not None
+                else None,
             )
             view = GameSetupView(
                 self, interaction.user.id, "shared", settings, await self.store.sources()
@@ -1147,6 +1278,12 @@ class BowlBot(discord.Client):
 
         game_start.autocomplete("source")(source_autocomplete)
         practice_start.autocomplete("source")(source_autocomplete)
+
+        @game.command(name="speed", description="Change reading speed for the next question")
+        async def speed(
+            interaction: discord.Interaction, words_per_minute: app_commands.Range[int, 60, 300]
+        ):
+            await self.set_reading_speed(interaction, words_per_minute)
 
         @game.command(name="pause", description="Pause your session")
         async def pause(interaction: discord.Interaction):

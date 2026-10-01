@@ -28,7 +28,7 @@ async def game(tmp_path, monkeypatch):
         1,
         10,
         "shared",
-        dict(default_settings(), buzz_seconds=47),
+        dict(default_settings(), buzz_seconds=47, reading_mode="full"),
         [
             Question(
                 "q",

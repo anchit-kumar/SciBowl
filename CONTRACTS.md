@@ -22,6 +22,16 @@ Math formatting rules, review output contract, and checkpoints: `docs/MATH-TEXT-
 
 Python 3.12 / uv. Shared types live in `scibowl.models`.
 
+## Paced shared reading
+
+Shared defaults: `reading_mode="paced"`, `reading_wpm=180`; mode accepts `paced|full`, speed accepts non-bool integers 60–300. Solo stays full/untimed. Settings/setup use existing option > profile > built-in precedence. Legacy profiles merge new defaults; interrupted legacy snapshots without mode keep full delivery on resume. No schema migration.
+
+`Session.reading` marks unfinished paced delivery. While open and reading, there is no buzz deadline; valid buzzes always start the configured answer deadline. `refresh_deadline(round_id)` ends reading and arms the normal buzz window after final successful delivery. Misses/timeouts preserve unfinished reading and lockouts. Completed reading rebounds get a fresh buzz window.
+
+Adapter owns `Reading` progress and immutable per-question WPM, one task/session, ~1s ticks, cumulative prefixes and overflow without future-text leakage. Balanced parentheses stay together; whitespace/Unicode are preserved. Serialize edits with lifecycle operations; acknowledge clicks before waiting. Cancel reading on buzz/pause/stop/advance/failure. Rebounds restore the buzz prefix and continue; results/skips restore full text. No catch-up bursts after HTTP delays. Resume/restart retains existing discard-unfinished behavior.
+
+`/game speed words_per_minute` is starter-only, channel-local, private, acknowledged before I/O, and persisted to session settings for the next question (including after recovery). It does not edit personal profiles or the current question/rebound WPM. Solo rejects it. Shared start options add `reading_wpm` and `paced_reading`. Root owns lifecycle/delivery integration; settings and test workers have bounded ownership.
+
 ## Oly corpus expansion ownership
 
 Root owns catalog/download orchestration, shared parser changes, integration, backup, deduplication, and final database import. Review workers own only their assigned ignored staging outputs and review notes; they do not modify the database, shared application code, or .env. Every accepted record must retain packet URL, checksum, page, category, and role. Uncertain extraction is excluded with reasons. Record the actual review method; automated source comparisons and sampled visual review must not be described as exhaustive visual review. PDFs, question text, and local review artifacts remain ignored.

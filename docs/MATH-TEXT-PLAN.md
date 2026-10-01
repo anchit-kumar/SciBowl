@@ -56,3 +56,10 @@ Each worker reads this contract and its batch; reviews every assigned question; 
 - Targeted Ruff lint/format and feature diff checks pass. Discord checks use mocked channels, not a live server; desktop/mobile font appearance remains a manual check.
 - Feature commit includes replacement/import code, safety/delivery tests, contracts, and bank operations documentation. The 113 updated questions and 155-transition ledger are local SQLite state; corpus/audits/backups remain ignored. Existing engine/ignore changes and local handoff/Serena files are excluded.
 - Next feature: paced reveal and adjustable speed in Discord; finalize controls/update timing before implementation.
+
+## Paced reading implementation
+
+- Shared growing-text delivery, default 180 WPM, exact 60–300 WPM; solo unchanged. Settings/setup offer paced/full. `/game speed words_per_minute` is starter-only and applies next question without changing saved preferences. Discord uses a numeric speed command instead of a native slider.
+- Buzz freezes reading; misses/timeouts restore that prefix and continue. Buzz countdown starts after final delivery; answer countdown starts on buzz. Results/skips restore full text. Overflow and stable button dispatch retain privacy/concurrency guarantees.
+- No schema change; session speed persists. Reading progress is transient: recovery remains paused and resume discards the unfinished question. Existing unrelated engine line endings and other work are excluded from the feature commit.
+- Verification: 10 targeted tests pass, including mocked concurrent buzzes, slow edits, rebounds, timeouts, speed auth/persistence, overflow, delivery failure, full/solo behavior, settings and setup. Live Discord remains unchecked.

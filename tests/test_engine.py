@@ -103,7 +103,12 @@ async def test_failed_player_locked_out_until_next_question():
 async def test_configured_timeout_reopens_then_open_timeout_closes(monkeypatch):
     now = 100.0
     monkeypatch.setattr("scibowl.engine.time.monotonic", lambda: now)
-    settings = {**default_settings(), "answer_seconds": 7, "buzz_seconds": 19}
+    settings = {
+        **default_settings(),
+        "answer_seconds": 7,
+        "buzz_seconds": 19,
+        "reading_mode": "full",
+    }
     session = Session("s", 1, 1, "shared", settings, [q(1)])
     await session.next_question()
     assert await session.buzz(1, 1)
