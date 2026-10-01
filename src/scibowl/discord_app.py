@@ -48,16 +48,30 @@ class QuestionView(discord.ui.View):
             if session.state == "revealed":
                 self.add_item(button("Next", self.next_question, style=discord.ButtonStyle.primary))
             self.add_item(button("Stop", self.stop_game, style=discord.ButtonStyle.danger))
+        actions = {
+            "Buzz": "buzz",
+            "Answer": "answer",
+            "Reveal": "reveal",
+            "Next": "next",
+            "Stop": "stop",
+        }
+        for item in self.children:
+            item.custom_id = f"game:{session.id}:{self.round_id}:{actions[item.label]}"
+        # Render components without registering callbacks: the central dispatcher survives edits.
+        self.stop()
 
-    async def interaction_check(self, interaction):
+    def active(self, interaction):
         session = self.session
-        valid = (
+        return (
             self.app.sessions.get(session.channel_id) is session
             and session.round_id == self.round_id
             and session.state not in ("paused", "finished")
+            and (session.mode != "solo" or interaction.user.id == session.starter_id)
         )
-        if session.mode == "solo" and interaction.user.id != session.starter_id:
-            valid = False
+
+    async def interaction_check(self, interaction):
+        session = self.session
+        valid = self.active(interaction)
         if not valid:
             await interaction.response.send_message(
                 "This control is no longer available to you.", ephemeral=True
@@ -69,9 +83,7 @@ class QuestionView(discord.ui.View):
     async def buzz(self, interaction):
         await interaction.response.defer(ephemeral=True)
         async with self.app.operation_lock(self.session):
-            if self.app.sessions.get(
-                self.session.channel_id
-            ) is not self.session or not await self.session.buzz(
+            if not self.active(interaction) or not await self.session.buzz(
                 interaction.user.id, self.round_id
             ):
                 return await self.app.private_reply(
@@ -109,11 +121,13 @@ class QuestionView(discord.ui.View):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
             if (
-                self.app.sessions.get(self.session.channel_id) is not self.session
+                not self.active(interaction)
                 or self.session.state != "answering"
                 or self.session.round_id != self.round_id
             ):
-                return
+                return await self.app.control_reply(
+                    interaction, "This reveal control is no longer active."
+                )
             await self.session.skip()
             await self.app.reveal(self.session, "Skipped")
 
@@ -121,20 +135,23 @@ class QuestionView(discord.ui.View):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
             if (
-                self.app.sessions.get(self.session.channel_id) is self.session
+                self.active(interaction)
                 and self.session.state == "revealed"
                 and self.round_id == self.session.round_id
             ):
                 await self.app.advance(self.session)
+            else:
+                await self.app.control_reply(
+                    interaction, "This next-question control is no longer active."
+                )
 
     async def stop_game(self, interaction):
         await interaction.response.defer()
         async with self.app.operation_lock(self.session):
-            if (
-                self.app.sessions.get(self.session.channel_id) is not self.session
-                or self.session.round_id != self.round_id
-            ):
-                return
+            if not self.active(interaction) or self.session.round_id != self.round_id:
+                return await self.app.control_reply(
+                    interaction, "This stop control is no longer active."
+                )
             await self.app.finalize(self.session, early=True)
 
 
@@ -443,9 +460,11 @@ class BowlBot(discord.Client):
     async def reveal(self, session, label):
         self.cancel_timer(session)
         await self.persist(session)
+        previous_view = self.question_views.get(session.id)
         if not await self.restore_question(session):
             return
-        await self.update_controls(session)
+        if self.question_views.get(session.id) is previous_view:
+            await self.update_controls(session)
         if session.current:
             for part in chunks(f"{label}\n\nOfficial answer: {session.current.answer}"):
                 try:
@@ -474,9 +493,11 @@ class BowlBot(discord.Client):
         """Offer a rebound without leaking the official answer or judge explanation."""
         self.cancel_timer(session)
         await self.persist(session)
+        previous_view = self.question_views.get(session.id)
         if not await self.restore_question(session):
             return
-        await self.update_controls(session)
+        if self.question_views.get(session.id) is previous_view:
+            await self.update_controls(session)
         try:
             await self.send_session_message(
                 session.id,
@@ -644,25 +665,54 @@ class BowlBot(discord.Client):
             await asyncio.sleep(0.25)
 
     async def show_review(self, interaction, session_id=None, page=0, kind="missed", edit=False):
+        await interaction.response.defer(ephemeral=True, thinking=not edit)
         payload = await self.store.review(interaction.user.id, session_id)
         if not payload:
-            return await interaction.response.send_message(
-                "No saved review found for you.", ephemeral=True
-            )
+            return await interaction.followup.send("No saved review found for you.", ephemeral=True)
         pages = review_pages(payload, interaction.user.id, kind)
         page = max(0, min(page, len(pages) - 1))
         embed = pages[page].set_footer(text=f"Game {payload['id']} · page {page + 1}/{len(pages)}")
         view = review_view(payload["id"], interaction.user.id, page, len(pages), kind)
         if edit:
-            await interaction.response.edit_message(embed=embed, view=view)
+            await interaction.edit_original_response(embed=embed, view=view)
         else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    async def control_reply(self, interaction, content):
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True)
+        else:
+            await interaction.response.send_message(content, ephemeral=True)
+
+    async def dispatch_game_control(self, interaction, custom_id):
+        _, session_id, round_id, action = custom_id.split(":")
+        round_id = int(round_id)
+        session = self.sessions.get(interaction.channel_id)
+        if session is None or session.id != session_id or session.round_id != round_id:
+            return await self.control_reply(interaction, "This game control is invalid or expired.")
+        actions = {
+            "buzz": "buzz",
+            "answer": "answer",
+            "reveal": "reveal",
+            "next": "next_question",
+            "stop": "stop_game",
+        }
+        allowed = (
+            {"buzz", "answer"} if session.mode == "shared" else {"answer", "reveal", "next", "stop"}
+        )
+        if action not in allowed:
+            return await self.control_reply(interaction, "This game control is invalid or expired.")
+        view = QuestionView(self, session)
+        if await view.interaction_check(interaction):
+            await getattr(view, actions[action])(interaction)
 
     async def on_interaction(self, interaction):
         # IDs contain no answer text. This dispatcher keeps reviews working after restart.
         custom_id = (interaction.data or {}).get("custom_id", "")
         try:
-            if custom_id.startswith("reviewopen:"):
+            if custom_id.startswith("game:"):
+                await self.dispatch_game_control(interaction, custom_id)
+            elif custom_id.startswith("reviewopen:"):
                 await self.show_review(interaction, custom_id.split(":")[1])
             elif custom_id.startswith("review:"):
                 _, session_id, owner, page, kind, *_ = custom_id.split(":")
@@ -677,24 +727,28 @@ class BowlBot(discord.Client):
                 await self.show_review(interaction, session_id, int(page), kind, edit=True)
             elif custom_id.startswith("board:"):
                 _, session_id, page = custom_id.split(":")
+                await interaction.response.defer()
                 payload = await self.store.load_session(session_id)
                 # Only permit public boards in their original game channel.
                 if not payload or payload["channel_id"] != interaction.channel_id:
-                    return await interaction.response.send_message(
+                    return await interaction.followup.send(
                         "Leaderboard unavailable here.", ephemeral=True
                     )
                 pages = self.board_pages(payload)
                 page = max(0, min(int(page), len(pages) - 1))
-                await interaction.response.edit_message(
+                await interaction.edit_original_response(
                     embed=discord.Embed(title="Leaderboard", description=pages[page]).set_footer(
                         text=f"Game {session_id} · {page + 1}/{len(pages)}"
                     ),
                     view=self.leaderboard_view(session_id, page, len(pages)),
                 )
         except (ValueError, KeyError):
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "This control is invalid or expired.", ephemeral=True
+            await self.control_reply(interaction, "This control is invalid or expired.")
+        except Exception as error:  # noqa: BLE001 -- interaction boundary must acknowledge failures
+            log.warning("Component failed (%s)", type(error).__name__)
+            with contextlib.suppress(discord.HTTPException):
+                await self.control_reply(
+                    interaction, "Sorry, that action failed. Please try again."
                 )
 
     async def start_session(self, interaction, mode, settings):

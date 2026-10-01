@@ -140,7 +140,7 @@ async def test_review_owner_rejection_and_missing_review_are_ephemeral(tmp_path)
         bot.store.review = AsyncMock(return_value=None)
         owner = interaction(user_id=10)
         await bot.show_review(owner, "game-1")
-        owner.response.send_message.assert_awaited_once_with(
+        owner.followup.send.assert_awaited_once_with(
             "No saved review found for you.", ephemeral=True
         )
     finally:

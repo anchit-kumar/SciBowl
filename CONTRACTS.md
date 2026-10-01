@@ -1,5 +1,9 @@
 # Shared application contracts
 
+## Concurrent game controls
+
+Game components use `game:SESSION:ROUND:ACTION` IDs (`buzz`, `answer`, `reveal`, `next`, `stop`). QuestionView renders layout only and does not register SDK callbacks; BowlBot.on_interaction is the sole response owner. IDs carry no answers. Route by interaction channel/session, check solo ownership and round, acknowledge before locks/I/O, and recheck state under the operation lock. Answer opens its modal immediately; submission revalidates under lock. Replaced/stopped layouts must not make clicks disappear. Reject stale controls privately. Review/board/settings-save defer before SQLite; privacy restrictions remain authoritative. Root owns discord_app integration; settings worker owns only ui.py.
+
 ## Readable math text ownership
 
 Math formatting rules, review output contract, and checkpoints: `docs/MATH-TEXT-PLAN.md`. Review workers own only numbered ignored staging outputs; root owns integration and database apply. This feature uses existing Discord text delivery. Formula formatting must preserve answer matching, canonical content identity rules, and historical snapshots.

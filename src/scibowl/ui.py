@@ -1,10 +1,13 @@
 """Discord presentation: private settings and stateless, owner-checked review pages."""
 
 import copy
+import logging
 
 import discord
 
 from .models import CATEGORIES, default_settings, validate_settings
+
+logger = logging.getLogger(__name__)
 
 
 def button(label, callback, *, style=discord.ButtonStyle.secondary, row=None):
@@ -295,8 +298,16 @@ class SettingsView(discord.ui.View):
         async def save(interaction):
             if not await current(interaction):
                 return
-            await self.store.save_preferences(self.owner, self.drafts, self.dm)
-            await interaction.response.edit_message(
+            await interaction.response.defer()
+            try:
+                await self.store.save_preferences(self.owner, self.drafts, self.dm)
+            except Exception as exc:  # noqa: BLE001 -- keep the private panel usable on failure
+                logger.error("Settings save failed (%s)", type(exc).__name__)
+                await interaction.followup.send(
+                    "Settings could not be saved. Please try again.", ephemeral=True
+                )
+                return
+            await interaction.edit_original_response(
                 content="Personal settings saved. Future games use these defaults.", view=None
             )
             self.stop()
