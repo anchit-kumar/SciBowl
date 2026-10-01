@@ -3,7 +3,7 @@
 ## Product and stack
 
 - Build a Science Bowl Discord bot for a few dozen users. Use Python 3.12, uv, discord.py, SQLite, and GroqCloud. Node.js is not required.
-- Run locally on Windows initially; keep the application portable to an Ubuntu laptop. GitHub is for version control, not hosting.
+- Keep the application portable across Windows and Ubuntu; use separate virtual environments when sharing a checkout. GitHub is for version control, not hosting.
 - Manage dependencies with uv and commit pyproject.toml, uv.lock, and .python-version. Use `uv sync --locked` and `uv run` for setup and commands.
 - Store credentials only in the ignored local .env file. Commit an .env.example with empty secret values. Never print keys or commit secrets, runtime databases, downloaded PDFs, or backups.
 

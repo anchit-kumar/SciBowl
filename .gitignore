@@ -1,7 +1,7 @@
 .env
 .env.*
 !.env.example
-.venv/
+.venv*/
 .uv-cache/
 .python/
 __pycache__/
@@ -17,3 +17,14 @@ logs/
 reports/
 staging/
 *.sqlite*
+
+# Local agent state and handoffs
+.serena/
+.agents/
+.codex/
+HANDOFF.md
+handoff.md
+
+# Downloaded question material and runtime databases
+*.pdf
+*.db

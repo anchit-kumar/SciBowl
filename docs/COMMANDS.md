@@ -153,9 +153,9 @@ uv run scibowl bank import staging/packet.json
 | `uv run ruff format --check src tests` | Check formatting without modifying files. |
 | `uv run ruff format src tests` | Apply Python formatting. |
 
-## First test launch
+## First launch
 
-Keep your existing test-server `DISCORD_GUILD_ID` for now.
+Configure `DISCORD_GUILD_ID` for your server and import reviewed questions first. Run these commands from the repository root.
 
 ```powershell
 uv run scibowl doctor

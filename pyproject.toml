@@ -2,6 +2,7 @@
 name = "scibowl"
 version = "0.1.0"
 description = "Local-first Science Bowl practice for Discord"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "discord.py>=2.5,<3",
