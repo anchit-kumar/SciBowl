@@ -80,6 +80,50 @@ def test_multiple_choice_is_local():
     )
 
 
+def test_multiple_choice_plain_text_ignores_display_pronunciation():
+    read_as = Question(
+        "pronunciation-parenthetical",
+        "",
+        "W) HYPOTHALAMUS",
+        "Biology",
+        format="multiple_choice",
+        choices={
+            "W": "hypothalamus (read as: hypo-THAL-ah-mus)",
+            "X": "cerebellum",
+        },
+    )
+    bracketed = Question(
+        "pronunciation-bracketed",
+        "",
+        "Y) MEDULLA OBLONGATA",
+        "Biology",
+        format="multiple_choice",
+        choices={
+            "X": "Amygdala [ah-MIG-dah-la]",
+            "Y": "Medulla [meh-DULL-ah] oblongata [awb-lawn-GAH-tah]",
+        },
+    )
+
+    assert asyncio.run(AnswerJudge().judge(read_as, "Hypothalamus")).verdict == "correct"
+    assert asyncio.run(AnswerJudge().judge(read_as, "x")).verdict == "incorrect"
+    assert asyncio.run(AnswerJudge().judge(read_as, "cerebellum")).verdict == "incorrect"
+    assert asyncio.run(AnswerJudge().judge(bracketed, "Medulla oblongata")).verdict == "correct"
+
+
+def test_multiple_choice_answer_text_preserves_scientific_case():
+    question = Question(
+        "formula-choice",
+        "",
+        "W) CO",
+        "Chemistry",
+        format="multiple_choice",
+        choices={"W": "carbon monoxide", "X": "cobalt"},
+    )
+
+    assert asyncio.run(AnswerJudge().judge(question, "CO")).verdict == "correct"
+    assert asyncio.run(AnswerJudge().judge(question, "Co")).verdict == "incorrect"
+
+
 async def test_groq_json_and_failure_are_safe():
     judge = AnswerJudge()
 
@@ -166,7 +210,7 @@ async def test_rate_limit_cooldown_skips_requests():
 
 async def test_typo_policy_is_sent_to_mock_provider():
     judge = AnswerJudge()
-    assert judge.policy_version == "v4"
+    assert judge.policy_version == "v5"
 
     class FakeCompletions:
         async def create(self, **kwargs):

@@ -80,6 +80,11 @@ def _accepted_candidates(answer: str) -> list[str]:
     ]
 
 
+def _choice_answer_texts(values: list[str]) -> list[str]:
+    """Recover answer text from official values such as ``W) HYPOTHALAMUS``."""
+    return [match.group(2).strip() for value in values if (match := _CHOICE.match(value))]
+
+
 class AnswerJudge:
     """Judge deterministic answers first, then use a narrowly scoped Groq request."""
 
@@ -87,7 +92,7 @@ class AnswerJudge:
         self.model = model
         self._client: Any | None = None
         self._cooldown_until = 0.0
-        self.policy_version = "v4"
+        self.policy_version = "v5"
         if api_key:
             # Import lazily so local-only installs and tests do not need network setup.
             from groq import AsyncGroq
@@ -103,6 +108,7 @@ class AnswerJudge:
         ]
         if question.format == "multiple_choice":
             expected_letters = AnswerJudge._choice_letters(accepted)
+            accepted.extend(_choice_answer_texts(accepted))
             for letter, choice in question.choices.items():
                 if _matches(submitted, letter, choice_letter=True) or _matches(submitted, choice):
                     if letter.casefold() in expected_letters or any(
